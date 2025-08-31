@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"flag"
+	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +23,7 @@ func main() {
 	ttl := flag.Duration("ttl", time.Minute*5, "TTL to set on responses, with seconds granularity")
 	domainZoneStr := flag.String("zone", "a.example.com.", "domain zone to reply for")
 	ns1Str := flag.String("ns1", "ns1.example.com.", "main nameserver for the zone")
+	keyFile := flag.String("key", os.Getenv("MONERO_HIGHWAY_KEY"), "DER/PEM encoded private key. Alternatively, use MONERO_HIGHWAY_KEY environment variable")
 
 	flag.Parse()
 
@@ -36,10 +42,62 @@ func main() {
 		ns1 += "."
 	}
 
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		slog.Error("Failed to generate private key", "error", err)
-		panic(err)
+	var privateKey crypto.Signer
+	if *keyFile == "" {
+		slog.Warn("no private key file provided via -key or MONERO_HIGHWAY_KEY. Generating random secp256r1 key.")
+		pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			slog.Error("Failed to generate private key", "error", err)
+			panic(err)
+		}
+		der, err := x509.MarshalECPrivateKey(pk)
+		if err != nil {
+			slog.Error("Failed to marshal private key", "error", err)
+			panic(err)
+		}
+		pb := &pem.Block{Type: "EC PRIVATE KEY", Bytes: der}
+		buf := pem.EncodeToMemory(pb)
+		if buf == nil {
+			slog.Error("Failed to encode private key")
+			panic("Failed to encode private key")
+		}
+
+		slog.Warn("Generated private key", "type", "secp256r1", "pem", buf)
+		_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", buf)
+		privateKey = pk
+	} else {
+		keyData, err := os.ReadFile(*keyFile)
+		if err != nil {
+			slog.Error("Failed to read private key file", "error", err)
+			panic(err)
+		}
+
+		// handle pem
+		if decodedBlock, _ := pem.Decode(keyData); decodedBlock != nil {
+			keyData = decodedBlock.Bytes
+		}
+
+		key, err := x509.ParseECPrivateKey(keyData)
+		if err != nil {
+			key, err2 := x509.ParsePKCS1PrivateKey(keyData)
+			if err2 != nil {
+				slog.Error("Failed to parse private key", "error", err, "error2", err2)
+				key, err3 := x509.ParsePKCS8PrivateKey(keyData)
+				if err3 != nil {
+					slog.Error("Failed to parse private key", "error", err, "error2", err2, "error3", err3)
+					panic(err3)
+				} else if signer, ok := key.(crypto.Signer); ok {
+					privateKey = signer
+				} else {
+					panic("Private key does not implement crypto.Signer")
+				}
+			} else {
+				privateKey = key
+			}
+		} else {
+			privateKey = key
+		}
+		slog.Info("Loaded private key from file")
 	}
 
 	const soaTTL = time.Hour * 24 * 7
@@ -48,6 +106,9 @@ func main() {
 		slog.Error("Failed to create signer", "error", err)
 		panic(err)
 	}
+
+	slog.Info(fmt.Sprintf("DNSKEY pubkey %s", signer.DNSKEY().PublicKey), "record", strings.ReplaceAll(signer.DNSKEY().String(), "\t", " "))
+	slog.Info(fmt.Sprintf("DS digest %s", signer.DS().Digest), "record", strings.ReplaceAll(signer.DS().String(), "\t", " "))
 
 	var wg sync.WaitGroup
 
