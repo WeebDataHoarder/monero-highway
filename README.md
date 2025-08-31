@@ -15,6 +15,14 @@ Written via [meikg/dns](https://github.com/miekg/dns) as DNS library, [used by m
 
 ### Usage
 
+Following examples assume Go 1.24 is available locally for launching the command. You can also pre-compile a static binary for direct usage.
+
+```
+$ CGO_ENABLED=0 go build -v -o ./dns-checkpoints.bin ./cmd/dns-checkpoints 
+
+$ ./dns-checkpoints.bin -help
+```
+
 If `-key` or `MONERO_HIGHWAY_KEY` env var is not specified, a random ECDSA key will be generated and printed to console, which can be used in future invocations.
 
 State can be stored for startup via `-state`, otherwise new state needs to get fed via the HTTP api.
