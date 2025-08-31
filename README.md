@@ -89,6 +89,8 @@ checkpoints.example.com. 3600 IN RRSIG SOA 13 3 3600 (
 
 Via Zone transfers (AXFR) slave servers are supported. This can allow to maintain control of keys but have a wide DNS network, or keep the master server hidden.
 
+You can also run your own slave nameservers with your preferred DNS server software and setting the main DNS server as master.
+
 #### 1984 Hosting
  * Free of charge
  * https://1984.hosting/product/freedns/
