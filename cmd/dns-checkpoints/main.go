@@ -38,6 +38,10 @@ func main() {
 
 	flag.Parse()
 
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+
 	p := NewReplyPool()
 
 	recordTTL := uint32(*ttl / time.Second)
@@ -120,7 +124,7 @@ func main() {
 	}
 
 	const soaTTL = time.Hour * 24 * 7
-	signer, err := NewSigner(privateKey, soaTTL, time.Minute, domainZone, mailbox, nsValues...)
+	signer, err := NewSigner(slog.Default(), privateKey, soaTTL, time.Minute, domainZone, mailbox, nsValues...)
 	if err != nil {
 		slog.Error("Failed to create signer", "error", err)
 		panic(err)
@@ -149,7 +153,6 @@ func main() {
 	signer.Add(RR(signer.NS()...)...)
 	signer.Add(RR(signer.DS()...)...)
 	signer.Add(RR(signer.DNSKEY()...)...)
-	signer.Add(signer.SOA(time.Now()))
 
 	var storeState = func(ts time.Time) {
 
@@ -236,18 +239,9 @@ func main() {
 		}
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// refresh SOA
-		for range time.Tick(soaTTL / 4) {
-			signer.Add(signer.SOA(time.Now()))
-		}
-	}()
-
 	// await for signatures
 	for {
-		if txt := signer.Get(dns.TypeSOA); txt != nil {
+		if txt := signer.Get(dns.TypeNS); txt != nil {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)
@@ -356,7 +350,10 @@ func main() {
 					return
 				}
 				now := time.Now()
-				defer storeState(now)
+				defer func() {
+					time.Sleep(time.Second * 5)
+					storeState(now)
+				}()
 
 				values := r.URL.Query()
 

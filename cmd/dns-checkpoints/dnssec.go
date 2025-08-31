@@ -8,9 +8,11 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/big"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -29,8 +31,6 @@ type Signer struct {
 	zsk dns.DNSKEY
 	ksk dns.DNSKEY
 
-	soa dns.SOA
-
 	ttl     uint32
 	refresh uint32
 
@@ -38,6 +38,8 @@ type Signer struct {
 
 	records       [math.MaxUint16 + 1]*atomic.Pointer[SignedAnswer]
 	recordChannel chan []dns.RR
+	soa           atomic.Pointer[SignedAnswer]
+	logger        *slog.Logger
 }
 
 type SignedAnswer struct {
@@ -45,11 +47,12 @@ type SignedAnswer struct {
 	Sig *dns.RRSIG
 }
 
-func NewSigner(privateKey crypto.Signer, ttl, refresh time.Duration, zone, mailbox string, ns ...string) (*Signer, error) {
+func NewSigner(logger *slog.Logger, privateKey crypto.Signer, ttl, refresh time.Duration, zone, mailbox string, ns ...string) (*Signer, error) {
 	if len(ns) == 0 {
 		return nil, fmt.Errorf("not enough nameservers specified")
 	}
 	signer := &Signer{
+		logger:        logger,
 		zone:          zone,
 		mailbox:       mailbox,
 		key:           privateKey,
@@ -203,8 +206,7 @@ func (s *Signer) Process(interval time.Duration) error {
 				}
 			}
 		case rr := <-s.recordChannel:
-			now := time.Now()
-			sig, err := s.sign(rr, now)
+			sig, err := s.sign(rr, time.Now())
 			if err != nil {
 				return err
 			}
@@ -212,35 +214,29 @@ func (s *Signer) Process(interval time.Duration) error {
 				RR:  rr,
 				Sig: sig,
 			})
-
-			if rr[0].Header().Rrtype == dns.TypeSOA {
-				continue
-			}
-
-			if soaR := s.records[dns.TypeSOA].Load(); soaR != nil {
-				sigSOA, err := s.sign(soaR.RR, now)
-				if err != nil {
-					return err
-				}
-				s.records[dns.TypeSOA].Store(&SignedAnswer{
-					RR:  soaR.RR,
-					Sig: sigSOA,
-				})
-			}
 		}
+
+		now := time.Now()
+		soa := s.SOA(now)
+		sigSOA, err := s.sign([]dns.RR{soa}, now)
+		if err != nil {
+			return err
+		}
+
+		s.soa.Store(&SignedAnswer{
+			RR:  []dns.RR{soa},
+			Sig: sigSOA,
+		})
 	}
 }
 
 func (s *Signer) Transfer() (result []*SignedAnswer) {
-	soa := s.Get(dns.TypeSOA)
+	soa := s.soa.Load()
 	if soa == nil {
 		return
 	}
 	result = append(result, soa)
-	for i, r := range s.records {
-		if i == int(dns.TypeSOA) {
-			continue
-		}
+	for _, r := range s.records {
 		if rr := r.Load(); rr != nil {
 			result = append(result, rr)
 		}
@@ -250,6 +246,9 @@ func (s *Signer) Transfer() (result []*SignedAnswer) {
 }
 
 func (s *Signer) Get(rtype uint16) *SignedAnswer {
+	if rtype == dns.TypeSOA {
+		return s.soa.Load()
+	}
 	return s.records[rtype].Load()
 }
 
@@ -274,7 +273,12 @@ func (s *Signer) Add(rr ...dns.RR) {
 			panic("ttl mismatch")
 		}
 	}
+
 	s.recordChannel <- slices.Clone(rr)
+
+	for _, r := range rr {
+		s.logger.Debug("adding record", "record", strings.ReplaceAll(r.String(), "\t", " "))
+	}
 }
 
 func (s *Signer) DNSKEY() []*dns.DNSKEY {
