@@ -85,6 +85,59 @@ checkpoints.example.com. 3600 IN RRSIG SOA 13 3 3600 (
 ;; MSG SIZE  rcvd: 250
 ```
 
+### HTTP API
+
+If enabled via `-api-bind 127.0.0.1:19080`, an HTTP API will be set on that port for writing new TXT records.
+
+Example:
+
+```
+$ curl --verbose -XPOST "http://127.0.0.1:19080/?txt=abc123&txt=def567&txt=ghi890"
+*   Trying 127.0.0.1:19080...
+* Connected to 127.0.0.1 (127.0.0.1) port 19080
+* using HTTP/1.x
+> POST /?txt=abc123&txt=def567&txt=ghi890 HTTP/1.1
+> Host: 127.0.0.1:19080
+> User-Agent: curl/8.11.1
+> Accept: */*
+> 
+* Request completely sent off
+< HTTP/1.1 200 OK
+< Date: Sun, 31 Aug 2025 18:07:08 GMT
+< Content-Length: 0
+< 
+* Connection #0 to host 127.0.0.1 left intact
+```
+
+These records will be set atomically as a single unit, pre-signed with DNSSEC keys.
+
+After this, the TXT records will be the three txt arguments in provided order.
+
+```
+dig checkpoints.example.com TXT @1.1.1.1
+
+; <<>> DiG 9.18.36 <<>> checkpoints.example.com TXT @1.1.1.1
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 16783
+;; flags: qr rd ra ad; QUERY: 1, ANSWER: 3, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
+;; QUESTION SECTION:
+;checkpoints.example.com. IN      TXT
+
+;; ANSWER SECTION:
+checkpoints.example.com. 300 IN   TXT     "abc123"
+checkpoints.example.com. 300 IN   TXT     "def567"
+checkpoints.example.com. 300 IN   TXT     "ghi890"
+
+;; Query time: 12 msec
+;; SERVER: 1.1.1.1#53(1.1.1.1) (UDP)
+;; WHEN: Sun Aug 31 20:08:30 CEST 2025
+;; MSG SIZE  rcvd: 115
+```
+
 ### FreeDNS slave providers
 
 Via Zone transfers (AXFR) slave servers are supported. This can allow to maintain control of keys but have a wide DNS network, or keep the master server hidden.
