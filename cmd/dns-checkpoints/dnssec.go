@@ -21,7 +21,6 @@ type Signer struct {
 	key crypto.Signer
 
 	zone    string
-	ns1     string
 	mailbox string
 
 	ds     dns.DS
@@ -32,6 +31,8 @@ type Signer struct {
 	ttl     uint32
 	refresh uint32
 
+	ns []*dns.NS
+
 	records       [math.MaxUint16 + 1]*atomic.Pointer[SignedAnswer]
 	recordChannel chan []dns.RR
 }
@@ -41,10 +42,12 @@ type SignedAnswer struct {
 	Sig *dns.RRSIG
 }
 
-func NewSigner(privateKey crypto.Signer, zone, ns1, mailbox string, ttl, refresh time.Duration) (*Signer, error) {
+func NewSigner(privateKey crypto.Signer, ttl, refresh time.Duration, zone, mailbox string, ns ...string) (*Signer, error) {
+	if len(ns) == 0 {
+		return nil, fmt.Errorf("not enough nameservers specified")
+	}
 	signer := &Signer{
 		zone:          zone,
-		ns1:           ns1,
 		mailbox:       mailbox,
 		key:           privateKey,
 		ttl:           uint32(ttl / time.Second),
@@ -118,7 +121,7 @@ func NewSigner(privateKey crypto.Signer, zone, ns1, mailbox string, ttl, refresh
 
 	signer.dnsKey = dns.DNSKEY{
 		Hdr: dns.RR_Header{
-			Name:   zone,
+			Name:   signer.zone,
 			Rrtype: dns.TypeDNSKEY,
 			Class:  dns.ClassINET,
 			Ttl:    signer.ttl,
@@ -136,6 +139,18 @@ func NewSigner(privateKey crypto.Signer, zone, ns1, mailbox string, ttl, refresh
 	}
 
 	signer.ds = *ds
+
+	for _, n := range ns {
+		signer.ns = append(signer.ns, &dns.NS{
+			Hdr: dns.RR_Header{
+				Name:   signer.zone,
+				Rrtype: dns.TypeNS,
+				Class:  dns.ClassINET,
+				Ttl:    signer.ttl,
+			},
+			Ns: n,
+		})
+	}
 
 	return signer, nil
 }
@@ -175,6 +190,24 @@ func (s *Signer) Process(interval time.Duration) error {
 	}
 }
 
+func (s *Signer) Transfer() (result []*SignedAnswer) {
+	soa := s.Get(dns.TypeSOA)
+	if soa == nil {
+		return
+	}
+	result = append(result, soa)
+	for i, r := range s.records {
+		if i == int(dns.TypeSOA) {
+			continue
+		}
+		if rr := r.Load(); rr != nil {
+			result = append(result, rr)
+		}
+	}
+	result = append(result, soa)
+	return result
+}
+
 func (s *Signer) Get(rtype uint16) *SignedAnswer {
 	return s.records[rtype].Load()
 }
@@ -211,6 +244,17 @@ func (s *Signer) DS() *dns.DS {
 	return &s.ds
 }
 
+func (s *Signer) NSRR() (result []dns.RR) {
+	for _, rr := range s.ns {
+		result = append(result, rr)
+	}
+	return result
+}
+
+func (s *Signer) NS() []*dns.NS {
+	return s.ns
+}
+
 func (s *Signer) SOA(now time.Time) *dns.SOA {
 	return &dns.SOA{
 		Hdr: dns.RR_Header{
@@ -219,7 +263,7 @@ func (s *Signer) SOA(now time.Time) *dns.SOA {
 			Class:  dns.ClassINET,
 			Ttl:    s.ttl,
 		},
-		Ns:     s.ns1,
+		Ns:     s.ns[0].Ns,
 		Mbox:   s.mailbox,
 		Serial: uint32(now.Unix()),
 

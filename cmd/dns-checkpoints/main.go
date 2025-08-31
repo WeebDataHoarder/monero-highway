@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"git.gammaspectra.live/P2Pool/monero-highway/internal/utils"
 	"github.com/miekg/dns"
 )
 
@@ -24,8 +25,12 @@ func main() {
 	bind := flag.String("bind", "0.0.0.0:15353", "address to bind DNS server to, UDP and TCP")
 	ttl := flag.Duration("ttl", time.Minute*5, "TTL to set on responses, with seconds granularity")
 	domainZoneStr := flag.String("zone", "a.example.com.", "domain zone to reply for")
-	ns1Str := flag.String("ns1", "ns1.example.com.", "main nameserver for the zone")
+	//TODO: multiple
+	var nsValues utils.MultiStringFlag
+	flag.Var(&nsValues, "ns", "nameservers for the zone. Can be specified multiple times")
+	mailboxStr := flag.String("mailbox", "dns.example.com.", "mailbox for the zone SOA record")
 	keyFile := flag.String("key", os.Getenv("MONERO_HIGHWAY_KEY"), "DER/PEM encoded private key. Alternatively, use MONERO_HIGHWAY_KEY environment variable")
+	axfr := flag.Bool("axfr", false, "allow zone transfers via AXFR TCP transfers")
 
 	flag.Parse()
 
@@ -38,10 +43,18 @@ func main() {
 		slog.Warn("-domain does not end with . suffix, adding", "domain", domainZone)
 		domainZone += "."
 	}
-	ns1 := *ns1Str
-	if !strings.HasSuffix(ns1, ".") {
-		slog.Warn("-ns1 does not end with . suffix, adding", "ns1", ns1)
-		ns1 += "."
+
+	mailbox := *mailboxStr
+	if !strings.HasSuffix(mailbox, ".") {
+		slog.Warn("-mailbox does not end with . suffix, adding", "mailbox", mailbox)
+		mailbox += "."
+	}
+
+	for i, ns := range nsValues {
+		if !strings.HasSuffix(ns, ".") {
+			slog.Warn("-ns does not end with . suffix, adding", "index", i, "ns", ns)
+			nsValues[i] += "."
+		}
 	}
 
 	var privateKey crypto.Signer
@@ -103,7 +116,7 @@ func main() {
 	}
 
 	const soaTTL = time.Hour * 24 * 7
-	signer, err := NewSigner(privateKey, domainZone, ns1, "", soaTTL, time.Minute)
+	signer, err := NewSigner(privateKey, soaTTL, time.Minute, domainZone, mailbox, nsValues...)
 	if err != nil {
 		slog.Error("Failed to create signer", "error", err)
 		panic(err)
@@ -111,6 +124,9 @@ func main() {
 
 	slog.Info(fmt.Sprintf("DNSKEY pubkey %s", signer.DNSKEY().PublicKey), "record", strings.ReplaceAll(signer.DNSKEY().String(), "\t", " "))
 	slog.Info(fmt.Sprintf("DS digest %s", signer.DS().Digest), "record", strings.ReplaceAll(signer.DS().String(), "\t", " "))
+	for i, ns := range signer.NS() {
+		slog.Info(fmt.Sprintf("NS%d", i+1), "record", strings.ReplaceAll(ns.String(), "\t", " "))
+	}
 
 	var wg sync.WaitGroup
 
@@ -124,6 +140,7 @@ func main() {
 		}
 	}()
 
+	signer.Add(signer.NSRR()...)
 	signer.Add(signer.DS())
 	signer.Add(signer.DNSKEY())
 	signer.Add(signer.SOA(time.Now()))
@@ -145,50 +162,70 @@ func main() {
 		time.Sleep(time.Millisecond * 10)
 	}
 
-	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
-		if len(r.Question) == 0 || r.Opcode != dns.OpcodeQuery {
-			return
-		}
+	getHandler := func(handleAXFR bool) dns.HandlerFunc {
+		return func(w dns.ResponseWriter, r *dns.Msg) {
+			if len(r.Question) == 0 || r.Opcode != dns.OpcodeQuery {
+				return
+			}
 
-		msg := p.Get()
-		defer p.Put(msg)
+			msg := p.Get()
+			defer p.Put(msg)
 
-		for _, q := range r.Question {
-			if q.Qclass == dns.ClassINET && q.Name == domainZone {
-				answer := signer.Get(q.Qtype)
-				if answer != nil {
-					var isDNSSEC bool
-					if dns0 := r.IsEdns0(); dns0 != nil {
-						isDNSSEC = dns0.Do()
+			for _, q := range r.Question {
+				if q.Qclass == dns.ClassINET && q.Name == domainZone {
+					answer := signer.Get(q.Qtype)
+					if answer != nil {
+						var isDNSSEC bool
+						if dns0 := r.IsEdns0(); dns0 != nil {
+							isDNSSEC = dns0.Do()
+						}
+						msg.Authoritative = true
+						msg.Answer = append(msg.Answer, answer.RR...)
+						if isDNSSEC {
+							msg.Answer = append(msg.Answer, answer.Sig)
+						}
+						// disallow multiple queries to same match
+						break
+					} else if q.Qtype == dns.TypeAXFR && handleAXFR {
+
+						var isDNSSEC bool
+						if dns0 := r.IsEdns0(); dns0 != nil {
+							isDNSSEC = dns0.Do()
+						}
+						msg.Authoritative = true
+						for _, answer := range signer.Transfer() {
+							msg.Answer = append(msg.Answer, answer.RR...)
+							if isDNSSEC {
+								msg.Answer = append(msg.Answer, answer.Sig)
+							}
+						}
+						// disallow multiple queries to same match
+						break
 					}
-					msg.Authoritative = true
-					msg.Answer = append(msg.Answer, answer.RR...)
-					if isDNSSEC {
-						msg.Answer = append(msg.Answer, answer.Sig)
-					}
-					// disallow multiple queries to same match
-					break
 				}
 			}
-		}
 
-		if len(msg.Answer) > 0 {
-			// only set reply at the end
-			msg.SetReply(r)
-			_ = w.WriteMsg(msg)
+			if len(msg.Answer) > 0 {
+				// only set reply at the end
+				msg.SetReply(r)
+				_ = w.WriteMsg(msg)
+			} else {
+				msg.SetRcode(r, dns.RcodeRefused)
+				_ = w.WriteMsg(msg)
+			}
 		}
-	})
+	}
 
 	dnsServerTCP := &dns.Server{
 		Addr:    *bind,
 		Net:     "tcp",
-		Handler: handler,
+		Handler: getHandler(*axfr),
 	}
 
 	dnsServerUDP := dns.Server{
 		Addr:    *bind,
 		Net:     "udp",
-		Handler: handler,
+		Handler: getHandler(false),
 	}
 
 	//TODO: drop privileges if given root / port 53
