@@ -123,8 +123,7 @@ func main() {
 		slog.Info("Loaded private key from file")
 	}
 
-	const soaTTL = time.Hour * 24 * 7
-	signer, err := NewSigner(slog.Default(), privateKey, soaTTL, time.Minute, domainZone, mailbox, nsValues...)
+	signer, err := NewSigner(slog.Default(), privateKey, *ttl, time.Minute, domainZone, mailbox, nsValues...)
 	if err != nil {
 		slog.Error("Failed to create signer", "error", err)
 		panic(err)

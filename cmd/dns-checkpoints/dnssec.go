@@ -321,7 +321,7 @@ func (s *Signer) SOA(now time.Time) *dns.SOA {
 		Refresh: s.refresh,
 		Retry:   s.refresh / 2,
 		Expire:  s.refresh * 100,
-		Minttl:  s.ttl * 2,
+		Minttl:  s.ttl / 2,
 	}
 }
 
