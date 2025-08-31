@@ -203,7 +203,8 @@ func (s *Signer) Process(interval time.Duration) error {
 				}
 			}
 		case rr := <-s.recordChannel:
-			sig, err := s.sign(rr, time.Now())
+			now := time.Now()
+			sig, err := s.sign(rr, now)
 			if err != nil {
 				return err
 			}
@@ -211,6 +212,21 @@ func (s *Signer) Process(interval time.Duration) error {
 				RR:  rr,
 				Sig: sig,
 			})
+
+			if rr[0].Header().Rrtype == dns.TypeSOA {
+				continue
+			}
+
+			if soaR := s.records[dns.TypeSOA].Load(); soaR != nil {
+				sigSOA, err := s.sign(soaR.RR, now)
+				if err != nil {
+					return err
+				}
+				s.records[dns.TypeSOA].Store(&SignedAnswer{
+					RR:  soaR.RR,
+					Sig: sigSOA,
+				})
+			}
 		}
 	}
 }
