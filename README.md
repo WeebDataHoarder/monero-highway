@@ -89,6 +89,8 @@ checkpoints.example.com. 3600 IN RRSIG SOA 13 3 3600 (
 
 If enabled via `-api-bind 127.0.0.1:19080`, an HTTP API will be set on that port for writing new TXT records.
 
+POST to the main HTTP endpoint with each record within the `txt` keys, in desired order. Multiple can be specified.
+
 Example:
 
 ```
