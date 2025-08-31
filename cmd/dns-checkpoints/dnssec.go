@@ -23,8 +23,11 @@ type Signer struct {
 	zone    string
 	mailbox string
 
-	ds     dns.DS
-	dnsKey dns.DNSKEY
+	zskDS dns.DS
+	kskDS dns.DS
+
+	zsk dns.DNSKEY
+	ksk dns.DNSKEY
 
 	soa dns.SOA
 
@@ -119,7 +122,7 @@ func NewSigner(privateKey crypto.Signer, ttl, refresh time.Duration, zone, mailb
 		return nil, fmt.Errorf("unsupported private key type: %T", privateKey)
 	}
 
-	signer.dnsKey = dns.DNSKEY{
+	signer.zsk = dns.DNSKEY{
 		Hdr: dns.RR_Header{
 			Name:   signer.zone,
 			Rrtype: dns.TypeDNSKEY,
@@ -127,18 +130,40 @@ func NewSigner(privateKey crypto.Signer, ttl, refresh time.Duration, zone, mailb
 			Ttl:    signer.ttl,
 		},
 		// https://www.rfc-editor.org/rfc/rfc4034.html#section-2.1.1
-		Flags:     0b0100_000,
+		// https://datatracker.ietf.org/doc/html/rfc4035#section-5.3.1
+		Flags:     dns.ZONE,
 		Protocol:  3,
 		Algorithm: algorithm,
 		PublicKey: base64.StdEncoding.EncodeToString(publicKey),
 	}
 
-	ds := signer.dnsKey.ToDS(dns.SHA256)
-	if ds == nil {
+	signer.ksk = dns.DNSKEY{
+		Hdr: dns.RR_Header{
+			Name:   signer.zone,
+			Rrtype: dns.TypeDNSKEY,
+			Class:  dns.ClassINET,
+			Ttl:    signer.ttl,
+		},
+		// https://www.rfc-editor.org/rfc/rfc4034.html#section-2.1.1
+		// https://datatracker.ietf.org/doc/html/rfc4035#section-5.3.1
+		Flags:     dns.ZONE | dns.SEP,
+		Protocol:  3,
+		Algorithm: algorithm,
+		PublicKey: base64.StdEncoding.EncodeToString(publicKey),
+	}
+
+	zskDS := signer.zsk.ToDS(dns.SHA256)
+	if zskDS == nil {
 		return nil, fmt.Errorf("failed to generate DS record")
 	}
 
-	signer.ds = *ds
+	kskDS := signer.ksk.ToDS(dns.SHA256)
+	if kskDS == nil {
+		return nil, fmt.Errorf("failed to generate DS record")
+	}
+
+	signer.zskDS = *zskDS
+	signer.kskDS = *kskDS
 
 	for _, n := range ns {
 		signer.ns = append(signer.ns, &dns.NS{
@@ -236,19 +261,25 @@ func (s *Signer) Add(rr ...dns.RR) {
 	s.recordChannel <- slices.Clone(rr)
 }
 
-func (s *Signer) DNSKEY() *dns.DNSKEY {
-	return &s.dnsKey
-}
-
-func (s *Signer) DS() *dns.DS {
-	return &s.ds
-}
-
-func (s *Signer) NSRR() (result []dns.RR) {
-	for _, rr := range s.ns {
-		result = append(result, rr)
+func (s *Signer) DNSKEY() []*dns.DNSKEY {
+	return []*dns.DNSKEY{
+		&s.zsk,
+		&s.ksk,
 	}
-	return result
+}
+
+func (s *Signer) DS() []*dns.DS {
+	return []*dns.DS{
+		&s.zskDS,
+		&s.kskDS,
+	}
+}
+
+func RR[T dns.RR](s ...T) (r []dns.RR) {
+	for _, e := range s {
+		r = append(r, e)
+	}
+	return r
 }
 
 func (s *Signer) NS() []*dns.NS {
@@ -275,11 +306,16 @@ func (s *Signer) SOA(now time.Time) *dns.SOA {
 }
 
 func (s *Signer) sign(rr []dns.RR, now time.Time) (sig *dns.RRSIG, err error) {
+	var key = &s.zsk
+	if rr[0].Header().Rrtype == dns.TypeDNSKEY {
+		key = &s.ksk
+	}
+
 	sig = &dns.RRSIG{
 		Hdr: dns.RR_Header{
-			Name:   s.dnsKey.Hdr.Name,
+			Name:   key.Hdr.Name,
 			Rrtype: dns.TypeRRSIG,
-			Class:  s.dnsKey.Hdr.Class,
+			Class:  key.Hdr.Class,
 			Ttl:    s.ttl,
 		},
 		TypeCovered: rr[0].Header().Rrtype,
@@ -289,9 +325,9 @@ func (s *Signer) sign(rr []dns.RR, now time.Time) (sig *dns.RRSIG, err error) {
 		// oh DNS, still using uint32 for time??? at least it's not int32
 		Expiration: uint32(now.Add(time.Second * time.Duration(s.ttl)).Unix()),
 		Inception:  uint32(now.Unix()),
-		KeyTag:     s.dnsKey.KeyTag(),
-		SignerName: s.dnsKey.Hdr.Name,
-		Algorithm:  s.dnsKey.Algorithm,
+		KeyTag:     key.KeyTag(),
+		SignerName: key.Hdr.Name,
+		Algorithm:  key.Algorithm,
 	}
 
 	if err = sig.Sign(s.key, rr); err != nil {

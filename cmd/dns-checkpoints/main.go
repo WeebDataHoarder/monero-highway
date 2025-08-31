@@ -126,8 +126,10 @@ func main() {
 		panic(err)
 	}
 
-	slog.Info(fmt.Sprintf("DNSKEY pubkey %s", signer.DNSKEY().PublicKey), "record", strings.ReplaceAll(signer.DNSKEY().String(), "\t", " "))
-	slog.Info(fmt.Sprintf("DS digest %s", signer.DS().Digest), "record", strings.ReplaceAll(signer.DS().String(), "\t", " "))
+	slog.Info("DNSKEY ZSK", "record", strings.ReplaceAll(signer.DNSKEY()[0].String(), "\t", " "))
+	slog.Info("DNSKEY KSK", "record", strings.ReplaceAll(signer.DNSKEY()[1].String(), "\t", " "))
+	slog.Info("DS ZSK", "record", strings.ReplaceAll(signer.DS()[0].String(), "\t", " "))
+	slog.Info("DS KSK", "record", strings.ReplaceAll(signer.DS()[1].String(), "\t", " "))
 	for i, ns := range signer.NS() {
 		slog.Info(fmt.Sprintf("NS%d", i+1), "record", strings.ReplaceAll(ns.String(), "\t", " "))
 	}
@@ -144,9 +146,9 @@ func main() {
 		}
 	}()
 
-	signer.Add(signer.NSRR()...)
-	signer.Add(signer.DS())
-	signer.Add(signer.DNSKEY())
+	signer.Add(RR(signer.NS()...)...)
+	signer.Add(RR(signer.DS()...)...)
+	signer.Add(RR(signer.DNSKEY()...)...)
 	signer.Add(signer.SOA(time.Now()))
 
 	var storeState = func(ts time.Time) {
