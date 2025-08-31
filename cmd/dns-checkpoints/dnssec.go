@@ -47,7 +47,7 @@ type SignedAnswer struct {
 	Sig *dns.RRSIG
 }
 
-func NewSigner(logger *slog.Logger, privateKey crypto.Signer, ttl, refresh time.Duration, zone, mailbox string, ns ...string) (*Signer, error) {
+func NewSigner(logger *slog.Logger, privateKey crypto.Signer, sigTTL, refresh time.Duration, zone, mailbox string, ns ...string) (*Signer, error) {
 	if len(ns) == 0 {
 		return nil, fmt.Errorf("not enough nameservers specified")
 	}
@@ -56,7 +56,7 @@ func NewSigner(logger *slog.Logger, privateKey crypto.Signer, ttl, refresh time.
 		zone:          zone,
 		mailbox:       mailbox,
 		key:           privateKey,
-		ttl:           uint32(ttl / time.Second),
+		ttl:           uint32(sigTTL / time.Second),
 		refresh:       uint32(refresh / time.Second),
 		recordChannel: make(chan []dns.RR),
 	}

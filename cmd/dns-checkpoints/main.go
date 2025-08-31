@@ -26,6 +26,7 @@ func main() {
 
 	bind := flag.String("bind", "0.0.0.0:15353", "address to bind DNS server to, UDP and TCP")
 	ttl := flag.Duration("ttl", time.Minute*5, "TTL to set on responses, with seconds granularity")
+	soaTTL := flag.Duration("soa-ttl", time.Hour, "SOA TTL to set on SOA responses and signatures, with seconds granularity")
 	domainZoneStr := flag.String("zone", "a.example.com.", "domain zone to reply for")
 	//TODO: multiple
 	var nsValues utils.MultiStringFlag
@@ -123,7 +124,7 @@ func main() {
 		slog.Info("Loaded private key from file")
 	}
 
-	signer, err := NewSigner(slog.Default(), privateKey, *ttl, time.Minute, domainZone, mailbox, nsValues...)
+	signer, err := NewSigner(slog.Default(), privateKey, *soaTTL, time.Minute, domainZone, mailbox, nsValues...)
 	if err != nil {
 		slog.Error("Failed to create signer", "error", err)
 		panic(err)
@@ -256,7 +257,7 @@ func main() {
 			defer p.Put(msg)
 
 			for _, q := range r.Question {
-				if q.Qclass == dns.ClassINET && q.Name == domainZone {
+				if q.Qclass == dns.ClassINET && dns.CanonicalName(q.Name) == domainZone {
 					answer := signer.Get(q.Qtype)
 					if answer != nil {
 						var isDNSSEC bool
