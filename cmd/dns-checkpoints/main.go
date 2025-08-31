@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"flag"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 
 func main() {
 	apiBind := flag.String("api-bind", "127.0.0.1:19080", "address to bind the HTTP API")
+
 	bind := flag.String("bind", "0.0.0.0:15353", "address to bind DNS server to, UDP and TCP")
 	ttl := flag.Duration("ttl", time.Minute*5, "TTL to set on responses, with seconds granularity")
 	domainZoneStr := flag.String("zone", "a.example.com.", "domain zone to reply for")
@@ -31,6 +33,8 @@ func main() {
 	mailboxStr := flag.String("mailbox", "dns.example.com.", "mailbox for the zone SOA record")
 	keyFile := flag.String("key", os.Getenv("MONERO_HIGHWAY_KEY"), "DER/PEM encoded private key. Alternatively, use MONERO_HIGHWAY_KEY environment variable")
 	axfr := flag.Bool("axfr", false, "allow zone transfers via AXFR TCP transfers")
+
+	state := flag.String("state", "", "state file to preserve set TXT records to load on startup. A temporary file will be created next to it.")
 
 	flag.Parse()
 
@@ -144,6 +148,91 @@ func main() {
 	signer.Add(signer.DS())
 	signer.Add(signer.DNSKEY())
 	signer.Add(signer.SOA(time.Now()))
+
+	var storeState = func(ts time.Time) {
+
+	}
+
+	if *state != "" {
+		stateData, err := os.ReadFile(*state)
+		if err != nil {
+			slog.Warn("Failed to read state file", "error", err)
+		} else {
+			var data []string
+			err = json.Unmarshal(stateData, &data)
+			if err != nil {
+				slog.Warn("Failed to unpack state file", "error", err)
+			} else {
+				var txt []dns.RR
+
+				for _, entry := range data {
+					if len(entry) == 0 {
+						continue
+					}
+					txt = append(txt, &dns.TXT{
+						Hdr: dns.RR_Header{
+							Name:   domainZone,
+							Rrtype: dns.TypeTXT,
+							Class:  dns.ClassINET,
+							Ttl:    recordTTL,
+						},
+						Txt: []string{entry},
+					})
+				}
+
+				signer.Add(txt...)
+				slog.Info("Loaded state file", "records", len(txt))
+			}
+		}
+		var stateMutex sync.Mutex
+		var lastTs time.Time
+		storeState = func(ts time.Time) {
+			stateMutex.Lock()
+			defer stateMutex.Unlock()
+
+			// check origin of call
+			if lastTs.After(ts) {
+				return
+			}
+			lastTs = ts
+
+			records := signer.Get(dns.TypeTXT)
+			if records == nil {
+				return
+			}
+			var data []string
+			for _, rr := range records.RR {
+				if r, ok := rr.(*dns.TXT); ok {
+					data = append(data, r.Txt[0])
+				}
+			}
+
+			stateData, err := json.MarshalIndent(data, "", " ")
+			if err != nil {
+				slog.Warn("Failed to encode state", "error", err)
+				return
+			}
+
+			var perm os.FileMode = 0644
+
+			if stat, err := os.Stat(*state); err == nil {
+				// preserve
+				perm = stat.Mode().Perm()
+			}
+			err = os.WriteFile(*state+"_", stateData, perm)
+			if err != nil {
+				slog.Warn("Failed to write state file", "error", err)
+				return
+			}
+
+			err = os.Rename(*state+"_", *state)
+			if err != nil {
+				slog.Warn("Failed to rename state file", "error", err)
+				return
+			}
+			slog.Debug("Saved state file")
+		}
+	}
 
 	wg.Add(1)
 	go func() {
@@ -264,6 +353,9 @@ func main() {
 					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
+				now := time.Now()
+				defer storeState(now)
+
 				values := r.URL.Query()
 
 				var txt []dns.RR
