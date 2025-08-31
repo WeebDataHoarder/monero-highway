@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 )
 
 func main() {
+	apiBind := flag.String("api-bind", "127.0.0.1:19080", "address to bind the HTTP API")
 	bind := flag.String("bind", "0.0.0.0:15353", "address to bind DNS server to, UDP and TCP")
 	ttl := flag.Duration("ttl", time.Minute*5, "TTL to set on responses, with seconds granularity")
 	domainZoneStr := flag.String("zone", "a.example.com.", "domain zone to reply for")
@@ -123,8 +125,8 @@ func main() {
 	}()
 
 	signer.Add(signer.DS())
-	signer.Add(signer.SOA(time.Now()))
 	signer.Add(signer.DNSKEY())
+	signer.Add(signer.SOA(time.Now()))
 
 	wg.Add(1)
 	go func() {
@@ -135,33 +137,9 @@ func main() {
 		}
 	}()
 
-	signer.Add(
-		&dns.TXT{
-			Hdr: dns.RR_Header{
-				Name:   domainZone,
-				Rrtype: dns.TypeTXT,
-				Class:  dns.ClassINET,
-				Ttl:    recordTTL,
-			},
-			Txt: []string{
-				"a",
-			},
-		},
-		&dns.TXT{
-			Hdr: dns.RR_Header{
-				Name:   domainZone,
-				Rrtype: dns.TypeTXT,
-				Class:  dns.ClassINET,
-				Ttl:    recordTTL,
-			},
-			Txt: []string{
-				"b",
-			},
-		},
-	)
-
+	// await for signatures
 	for {
-		if txt := signer.Get(dns.TypeTXT); txt != nil {
+		if txt := signer.Get(dns.TypeSOA); txt != nil {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)
@@ -236,6 +214,49 @@ func main() {
 			}
 		}
 	}()
+
+	if *apiBind != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			slog.Info("Starting HTTP server", "bind", *apiBind)
+
+			if err := http.ListenAndServe(*apiBind, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				values := r.URL.Query()
+
+				var txt []dns.RR
+
+				for _, entry := range values["txt"] {
+					if len(entry) == 0 {
+						continue
+					}
+					txt = append(txt, &dns.TXT{
+						Hdr: dns.RR_Header{
+							Name:   domainZone,
+							Rrtype: dns.TypeTXT,
+							Class:  dns.ClassINET,
+							Ttl:    recordTTL,
+						},
+						Txt: []string{entry},
+					})
+				}
+
+				if len(txt) > 0 {
+					signer.Add(txt...)
+					w.WriteHeader(http.StatusOK)
+				} else {
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			})); err != nil {
+				slog.Error("Failed to start HTTP server", "bind", *apiBind, "error", err)
+			}
+		}()
+	}
 
 	wg.Wait()
 	slog.Error("Exiting, no active servers")
