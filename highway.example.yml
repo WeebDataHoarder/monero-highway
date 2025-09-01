@@ -1,6 +1,15 @@
 
 bind: 0.0.0.0:18087
 
+# Example Tor proxy
+#proxy: "socks5://127.0.0.1:9050"
+
+peers:
+  # Examples
+  #- "1.1.1.1:18087"
+  #- "p2pool.io:18087"
+  #- "p2pool2giz2r5cpqicajwoazjcxkfujxswtk3jolfk2ubilhrkqam2id.onion:18087"
+
 state:
   # use defaults
 

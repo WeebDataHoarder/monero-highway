@@ -1,6 +1,7 @@
 package highway
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -25,7 +26,7 @@ type Configuration struct {
 	Peers []string `yaml:"peers"`
 
 	// Proxy Target proxy URL to use for all outgoing connections
-	// Includes peering, RPC and ZMQ
+	// Includes peering, checkpointers, RPC and ZMQ
 	// Default none
 	// Example TOR: socks5://127.0.0.1:9050
 	Proxy string `yaml:"socks5"`
@@ -47,7 +48,7 @@ type Configuration struct {
 	Checkpointers []CheckpointerConfig `yaml:"checkpointers"`
 }
 
-func (c Configuration) Dialer() (proxy.Dialer, error) {
+func (c Configuration) Dialer() (proxy.ContextDialer, error) {
 	d := &net.Dialer{
 		Timeout:       30 * time.Second,
 		KeepAlive:     15 * time.Second,
@@ -60,7 +61,14 @@ func (c Configuration) Dialer() (proxy.Dialer, error) {
 			return nil, err
 		}
 
-		return proxy.FromURL(uri, d)
+		pd, err := proxy.FromURL(uri, d)
+		if err != nil {
+			return nil, err
+		}
+		if cd, ok := pd.(proxy.ContextDialer); ok {
+			return cd, nil
+		}
+		return nil, errors.New("proxy does not implement proxy.ContextDialer")
 	}
 	return d, nil
 }
@@ -275,10 +283,10 @@ type CheckpointerConfig struct {
 	Config map[string]string  `yaml:"config"`
 }
 
-func (cc CheckpointerConfig) Send(d proxy.Dialer, c Checkpoints) error {
+func (cc CheckpointerConfig) Send(d proxy.ContextDialer, ctx context.Context, c Checkpoints) error {
 	httpClient := http.Client{
 		Transport: &http.Transport{
-			Dial: d.Dial,
+			DialContext: d.DialContext,
 		},
 		Timeout: 30 * time.Second,
 	}
