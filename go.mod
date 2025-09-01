@@ -3,7 +3,7 @@ module git.gammaspectra.live/P2Pool/monero-highway
 go 1.24.6
 
 require (
-	git.gammaspectra.live/P2Pool/consensus/v4 v4.5.1-0.20250831182900-87c509bacb54
+	git.gammaspectra.live/P2Pool/consensus/v4 v4.6.0
 	github.com/goccy/go-yaml v1.18.0
 	github.com/miekg/dns v1.1.68
 	golang.org/x/net v0.43.0

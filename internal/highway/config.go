@@ -218,13 +218,18 @@ func (mc *MoneroServerConfig) Verify() error {
 		return errors.New("submit-blocks or submit-transactions requires rpc")
 	} else if (mc.Options.GatherBlocks || mc.Options.GatherTransactions) && mc.ZMQ == "" {
 		return errors.New("gather-blocks or gather-transactions requires zmq")
+	} else if mc.Options.GatherAlternateBlocks && mc.Features.ZMQAlternateBlockNotify && mc.ZMQ == "" {
+		return errors.New("gather-alternate-blocks with zmq-alternate-block-notify requires zmq")
+	} else if mc.Options.GatherAlternateBlocks && !mc.Features.ZMQAlternateBlockNotify && mc.RPC == "" {
+		return errors.New("gather-alternate-blocks without zmq-alternate-block-notify requires rpc")
 	}
 
 	return nil
 }
 
 var DefaultMoneroServerOptions = MoneroServerOptions{
-	GatherBlocks: true,
+	GatherBlocks:          true,
+	GatherAlternateBlocks: true,
 
 	// Defaults to false. Enable this on nodes that can sustain higher RPC calls
 	// Transaction ids are still gathered
@@ -243,6 +248,10 @@ type MoneroServerOptions struct {
 	// GatherBlocks Use this node as a source to gather blocks
 	// Requires ZMQ and RPC
 	GatherBlocks bool `yaml:"gather-blocks"`
+
+	// GatherAlternateBlocks Use this node as a source to gather alternate blocks
+	// Requires ZMQ (if ZMQAlternateBlockNotify is true)  and RPC
+	GatherAlternateBlocks bool `yaml:"gather-alternate-blocks"`
 
 	// GatherTransactions Use this node as a source to gather transactions
 	// Requires ZMQ and RPC
