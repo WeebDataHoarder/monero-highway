@@ -11,7 +11,12 @@ monero:
       # requires custom patches
       #rpc-submit-old-blocks: true
       #zmq-alternate-block-notify: true
-      
+
+checkpointers:
+  - method: highway-dns
+    config:
+      url: http://127.0.0.1:19080
+
 fixed-checkpoints:
   - height: 1680000
     id: "898c0e0b338edc5edd850d241578027f489167cf7b3edb33ed9d08274e15e20e"

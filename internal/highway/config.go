@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -40,6 +42,9 @@ type Configuration struct {
 	// Could be manual ones, or old ones that need to be kept
 	// Values must be sorted descending on height
 	FixedCheckpoints Checkpoints `yaml:"fixed-checkpoints"`
+
+	// Checkpointers List of targets to upload checkpoints to
+	Checkpointers []CheckpointerConfig `yaml:"checkpointers"`
 }
 
 func (c Configuration) Dialer() (proxy.Dialer, error) {
@@ -256,4 +261,58 @@ type MoneroServerFeatures struct {
 	// custom patch required
 	// otherwise will poll RPC /get_alt_blocks_hashes
 	ZMQAlternateBlockNotify bool `yaml:"zmq-alternate-block-notify"`
+}
+
+type CheckpointerMethod string
+
+const (
+	// CheckpointerMethodHighwayDNS Use cmd/dns-checkpoints api
+	CheckpointerMethodHighwayDNS = "highway-dns"
+)
+
+type CheckpointerConfig struct {
+	Method CheckpointerMethod `yaml:"method"`
+	Config map[string]string  `yaml:"config"`
+}
+
+func (cc CheckpointerConfig) Send(d proxy.Dialer, c Checkpoints) error {
+	httpClient := http.Client{
+		Transport: &http.Transport{
+			Dial: d.Dial,
+		},
+		Timeout: 30 * time.Second,
+	}
+
+	switch cc.Method {
+	case CheckpointerMethodHighwayDNS:
+		uri, err := url.Parse(cc.Config["url"])
+		if err != nil {
+			return err
+		}
+		values := uri.Query()
+		delete(values, "txt")
+
+		for _, r := range c {
+			values.Add("txt", r.String())
+		}
+		uri.RawQuery = values.Encode()
+		req, err := http.NewRequest(http.MethodPost, uri.String(), nil)
+		if err != nil {
+			return err
+		}
+
+		r, err := httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer r.Body.Close()
+		defer io.ReadAll(r.Body)
+
+		if r.StatusCode != http.StatusOK {
+			return fmt.Errorf("checkpointer returned non-200 status code: %d", r.StatusCode)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown checkpoint method %s", cc.Method)
+	}
 }

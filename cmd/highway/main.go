@@ -39,6 +39,13 @@ func main() {
 
 	slog.Info("Loaded config file", "path", *configPath)
 
+	dialer, err := config.Dialer()
+	if err != nil {
+		slog.Error("Error creating dialer", "error", err)
+		panic(err)
+	}
+	_ = dialer
+
 	consensusId := config.State.Id()
 
 	{
