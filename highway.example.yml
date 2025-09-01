@@ -1,0 +1,55 @@
+
+bind: 0.0.0.0:18087
+
+state:
+  # use defaults
+
+monero:
+  - rpc: http://127.0.0.1:18081
+    zmq: tcp://127.0.0.1:18083
+    features:
+      # requires custom patches
+      #rpc-submit-old-blocks: true
+      #zmq-alternate-block-notify: true
+      
+fixed-checkpoints:
+  - height: 1680000
+    id: "898c0e0b338edc5edd850d241578027f489167cf7b3edb33ed9d08274e15e20e"
+  - height: 1288616
+    id: "875ac1bc7aa6c5eedc5410abb9c694034f9e7f79dce4c60698baf37009cb6365"
+  - height: 913269
+    id: "f8302e6b8ba1c49aad9a854b8d6c79d8272c6239dcbba5a75ed0784c1d4f56a1"
+  - height: 913193
+    id: "5292d5d56f6ba4de33a58d9a34d263e2cb3c6fee0aed2286fd4ac7f36d53c85f"
+  - height: 900000
+    id: "d9958d0e7dcf91a5a7b11de225927bf7efc6eb26240315ce12372be902cc1337"
+  - height: 850000
+    id: "00e2b557dde9fd4a9e2e3dd7ddac962f5ca475eb1095bc50aa757fd1218ab0a5"
+  - height: 800000
+    id: "2ced10aa85357ab6c14bb12b6b56d1dde28940820dda30911b73a5cc9a301760"
+  - height: 700000
+    id: "12be9b3d210b93f574d2526abb9c1ab2a881b479131fd0d4f7dac93875f503cd"
+  - height: 650000
+    id: "1d567f2b491324375a825895c5e7b52857b38e4fed0e42c40909c2d52240b4e0"
+  - height: 600000
+    id: "f5828ebf7d7d1cb61762c4dfe3ccf4ecab2e1aad23e8113668d981713b7a54c5"
+  - height: 550000
+    id: "c2e80a636438bd9f7a7ab432a6ad297e35540d80ff5b868bca098124cad2ff8c"
+  - height: 500000
+    id: "2428f0dbe49796be05ed81b347f53e1f7f44aed0abf641446ec2b94cae066b02"
+  - height: 450000
+    id: "4d098b511ca97723e81737c448343cfd4e6dadb3d8a0e757c6e4d595e6e48357"
+  - height: 400000
+    id: "1b2b0e7a30e59691491529a3d506d1ba3d6052d0f6b52198b7330b28a6f1b6ac"
+  - height: 375000
+    id: "c80c23e387585e12ffb6649d678e9ba328181797b9583a6d8911b77e25375737"
+  - height: 350000
+    id: "74da79f6a136969abd6364bd3d37af273c408d6471e8ab598e80569b42415f86"
+  - height: 325000
+    id: "4260d56368267bc2a70dd58d73c5ecf23b4e4d96e63c29a868e4a679b0741c7f"
+  - height: 300000
+    id: "0c1cd46df6ccff90ec4ab493281f2583c344cd62216c427628990fe9db1bb8b6"
+  - height: 250000
+    id: "f59d31839bd909ec8830b4f7f66ff213f0bd006334c8523daee452725e5c7a79"
+  - height: 233000
+    id: "4f69bec2af6c0852412bdd10c19e6af10c8d738fe2618b5511a98efd03ab477e"
