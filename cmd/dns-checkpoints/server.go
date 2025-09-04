@@ -17,7 +17,15 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 		var isDNSSEC bool
 		dns0 := r.IsEdns0()
 		if dns0 != nil {
+			if dns0.Version() != 0 {
+				msg.SetEdns0(udpBufferSize, false)
+				msg.SetRcode(r, dns.RcodeBadVers)
+				_ = w.WriteMsg(msg)
+				return
+			}
+
 			isDNSSEC = dns0.Do()
+			msg.SetEdns0(udpBufferSize, isDNSSEC)
 		}
 
 		var validQuery bool
@@ -49,13 +57,10 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 
 		if udp {
 			if dns0 != nil {
-				msg.SetEdns0(udpBufferSize, true)
 				msg.Truncate(int(dns0.UDPSize()))
 			} else {
 				msg.Truncate(dns.MinMsgSize)
 			}
-		} else {
-			msg.SetEdns0(udpBufferSize, true)
 		}
 
 		if len(msg.Answer) > 0 || validQuery {
