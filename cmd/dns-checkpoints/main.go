@@ -11,7 +11,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -148,15 +147,6 @@ func main() {
 	}()
 
 	signer.AddAuthorityRecords()
-	signer.Add(&dns.A{
-		Hdr: dns.RR_Header{
-			Name:   signer.Zone(),
-			Rrtype: dns.TypeA,
-			Class:  dns.ClassINET,
-			Ttl:    TTL(opts.RecordTTL),
-		},
-		A: net.IP{0, 0, 0, 0},
-	})
 
 	var storeState = func(ts time.Time) {
 

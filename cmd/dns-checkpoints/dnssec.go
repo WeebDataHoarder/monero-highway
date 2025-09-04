@@ -20,7 +20,8 @@ import (
 )
 
 type Signer struct {
-	opts SignerOptions
+	zoneLabels []string
+	opts       SignerOptions
 
 	kskDS dns.DS
 
@@ -130,6 +131,7 @@ func NewSigner(logger *slog.Logger, opts SignerOptions) (*Signer, error) {
 		logger:        logger,
 		recordChannel: make(chan []dns.RR),
 	}
+	signer.zoneLabels = dns.SplitDomainName(opts.Zone)
 	for i := range signer.records {
 		signer.records[i] = new(atomic.Pointer[SignedAnswer])
 	}
@@ -219,14 +221,25 @@ func (s *Signer) Process(interval time.Duration) error {
 				}
 			}
 		case rr := <-s.recordChannel:
-			sig, err := s.sign(rr, time.Now())
+			now := time.Now()
+			sig, err := s.sign(rr, now)
 			if err != nil {
 				return err
 			}
+
+			var updateNSEC = s.records[rr[0].Header().Rrtype].Load() == nil
+
 			s.records[rr[0].Header().Rrtype].Store(&SignedAnswer{
 				RR:  rr,
 				Sig: sig,
 			})
+
+			// update NSEC with type existence
+			if updateNSEC {
+				if err = s.updateNSEC(now); err != nil {
+					return err
+				}
+			}
 		}
 
 		now := time.Now()
@@ -241,6 +254,39 @@ func (s *Signer) Process(interval time.Duration) error {
 			Sig: sigSOA,
 		})
 	}
+}
+
+func (s *Signer) updateNSEC(now time.Time) error {
+	var types []uint16
+	for et, p := range s.records {
+		if p.Load() == nil && uint16(et) != dns.TypeSOA && uint16(et) != dns.TypeRRSIG && uint16(et) != dns.TypeNSEC {
+			continue
+		}
+		types = append(types, uint16(et))
+	}
+
+	rr := RR(&dns.NSEC{
+		Hdr: dns.RR_Header{
+			Name:   s.Zone(),
+			Rrtype: dns.TypeNSEC,
+			Class:  dns.ClassINET,
+			Ttl:    TTL(s.opts.AuthorityTTL),
+		},
+		NextDomain: s.Zone(),
+		TypeBitMap: types,
+	})
+
+	sig, err := s.sign(rr, now)
+	if err != nil {
+		return err
+	}
+
+	s.records[dns.TypeNSEC].Store(&SignedAnswer{
+		RR:  rr,
+		Sig: sig,
+	})
+
+	return nil
 }
 
 func (s *Signer) Transfer() (result []*SignedAnswer) {
@@ -258,6 +304,10 @@ func (s *Signer) Transfer() (result []*SignedAnswer) {
 	return result
 }
 
+func (s *Signer) ZoneLabels() []string {
+	return s.zoneLabels
+}
+
 func (s *Signer) Zone() string {
 	return s.opts.Zone
 }
@@ -270,6 +320,10 @@ func (s *Signer) Get(rtype uint16) *SignedAnswer {
 }
 
 func (s *Signer) AddAuthorityRecords() {
+	err := s.updateNSEC(time.Now())
+	if err != nil {
+		panic(err)
+	}
 	s.Add(RR(s.DS())...)
 	s.Add(RR(s.DNSKEY()...)...)
 

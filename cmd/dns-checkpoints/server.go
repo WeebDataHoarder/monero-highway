@@ -28,28 +28,54 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 			msg.SetEdns0(udpBufferSize, isDNSSEC)
 		}
 
-		var validQuery bool
+		zoneLabels := len(signer.ZoneLabels())
 
 		for _, q := range r.Question {
-			if q.Qclass == dns.ClassINET && dns.CanonicalName(q.Name) == signer.Zone() {
-				validQuery = true
-				answer := signer.Get(q.Qtype)
-				if answer != nil {
+			if q.Qclass == dns.ClassINET && dns.CompareDomainName(q.Name, signer.Zone()) == zoneLabels {
+				if cnt := dns.CountLabel(q.Name); cnt == zoneLabels {
 					msg.Authoritative = true
-					msg.Answer = append(msg.Answer, answer.RR...)
-					if isDNSSEC {
-						msg.Answer = append(msg.Answer, answer.Sig)
-					}
-					// disallow multiple queries to same match
-					break
-				} else if q.Qtype == dns.TypeAXFR && handleAXFR {
-					msg.Authoritative = true
-					for _, answer := range signer.Transfer() {
-						// always send DNSSEC records here
+
+					answer := signer.Get(q.Qtype)
+					if answer != nil {
 						msg.Answer = append(msg.Answer, answer.RR...)
-						msg.Answer = append(msg.Answer, answer.Sig)
+						if isDNSSEC {
+							msg.Answer = append(msg.Answer, answer.Sig)
+						}
+						// disallow multiple queries to same match
+						break
+					} else if q.Qtype == dns.TypeAXFR && handleAXFR {
+						for _, answer := range signer.Transfer() {
+							// always send DNSSEC records here
+							msg.Answer = append(msg.Answer, answer.RR...)
+							msg.Answer = append(msg.Answer, answer.Sig)
+						}
+						// disallow multiple queries to same match
+						break
+					} else {
+						if isDNSSEC {
+							soa := signer.Get(dns.TypeSOA)
+							msg.Ns = append(msg.Ns, soa.RR...)
+							msg.Ns = append(msg.Ns, soa.Sig)
+							nsec := signer.Get(dns.TypeNSEC)
+							msg.Ns = append(msg.Ns, nsec.RR...)
+							msg.Ns = append(msg.Ns, nsec.Sig)
+						}
+						break
 					}
-					// disallow multiple queries to same match
+				} else if cnt > zoneLabels {
+					msg.Authoritative = true
+					msg.SetRcode(r, dns.RcodeNameError)
+					if isDNSSEC {
+						soa := signer.Get(dns.TypeSOA)
+						msg.Ns = append(msg.Ns, soa.RR...)
+						msg.Ns = append(msg.Ns, soa.Sig)
+						nsec := signer.Get(dns.TypeNSEC)
+						msg.Ns = append(msg.Ns, nsec.RR...)
+						msg.Ns = append(msg.Ns, nsec.Sig)
+					}
+					break
+				} else {
+					msg.SetRcode(r, dns.RcodeRefused)
 					break
 				}
 			}
@@ -63,12 +89,6 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 			}
 		}
 
-		if len(msg.Answer) > 0 || validQuery {
-			// only set reply at the end
-			_ = w.WriteMsg(msg)
-		} else {
-			msg.SetRcode(r, dns.RcodeRefused)
-			_ = w.WriteMsg(msg)
-		}
+		_ = w.WriteMsg(msg)
 	}
 }
