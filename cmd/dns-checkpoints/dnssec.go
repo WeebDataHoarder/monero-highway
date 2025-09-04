@@ -20,19 +20,13 @@ import (
 )
 
 type Signer struct {
-	key crypto.Signer
-
-	zone    string
-	mailbox string
+	opts SignerOptions
 
 	zskDS dns.DS
 	kskDS dns.DS
 
 	zsk dns.DNSKEY
 	ksk dns.DNSKEY
-
-	ttl     uint32
-	refresh uint32
 
 	ns []*dns.NS
 
@@ -47,63 +41,61 @@ type SignedAnswer struct {
 	Sig *dns.RRSIG
 }
 
-func NewSigner(logger *slog.Logger, privateKey crypto.Signer, sigTTL, refresh time.Duration, zone, mailbox string, ns ...string) (*Signer, error) {
-	if len(ns) == 0 {
-		return nil, fmt.Errorf("not enough nameservers specified")
-	}
-	signer := &Signer{
-		logger:        logger,
-		zone:          zone,
-		mailbox:       mailbox,
-		key:           privateKey,
-		ttl:           uint32(sigTTL / time.Second),
-		refresh:       uint32(refresh / time.Second),
-		recordChannel: make(chan []dns.RR),
-	}
-	for i := range signer.records {
-		signer.records[i] = new(atomic.Pointer[SignedAnswer])
-	}
-	/*
-			k.setPublicKeyRSA(priv.PublicKey.E, priv.PublicKey.N)
-			return priv, nil
-		case ECDSAP256SHA256, ECDSAP384SHA384:
-			var c elliptic.Curve
-			switch k.Algorithm {
-			case ECDSAP256SHA256:
-				c = elliptic.P256()
-			case ECDSAP384SHA384:
-				c = elliptic.P384()
-			}
-			priv, err := ecdsa.GenerateKey(c, rand.Reader)
-			if err != nil {
-				return nil, err
-			}
-			k.setPublicKeyECDSA(priv.PublicKey.X, priv.PublicKey.Y)
-			return priv, nil
-		case ED25519:
-			pub, priv, err := ed25519.GenerateKey(rand.Reader)
-			if err != nil {
-				return nil, err
-			}
-			k.setPublicKeyED25519(pub)
-	*/
+const DefaultRecordTTL = time.Minute * 5
+const DefaultSignatureTTL = time.Hour
+const DefaultRefreshTTL = time.Minute
 
-	var algorithm uint8
-	var publicKey []byte
-	switch t := privateKey.(type) {
+// ClockSkewRange Time of expected clock skew on clients. See RFC 4035, Sec 5.3.1.
+const ClockSkewRange = time.Second * 20
+
+func TTL(d time.Duration) uint32 {
+	// oh DNS, still using uint32 for time??? at least it's not int32
+	return uint32(d / time.Second)
+}
+
+func DefaultSignerOptions() SignerOptions {
+	return SignerOptions{
+		RecordTTL:         DefaultRecordTTL,
+		AuthorityTTL:      time.Hour * 24,
+		RefreshTTL:        DefaultRefreshTTL,
+		SignatureTTL:      DefaultSignatureTTL,
+		SignatureBackdate: time.Hour * 24,
+		Zone:              "checkpoints.example.com.",
+		Mailbox:           "admin.example.com.",
+	}
+}
+
+type SignerOptions struct {
+	PrivateKey crypto.Signer
+
+	RecordTTL    time.Duration
+	AuthorityTTL time.Duration
+	RefreshTTL   time.Duration
+
+	SignatureTTL      time.Duration
+	SignatureBackdate time.Duration
+
+	Zone string
+
+	Mailbox string
+
+	Nameservers []string
+}
+
+func (so SignerOptions) PublicKey() (algorithm uint8, pub []byte, err error) {
+	switch t := so.PrivateKey.(type) {
 	case *rsa.PrivateKey:
-		algorithm = dns.RSASHA256
 
 		if pub, ok := t.Public().(*rsa.PublicKey); ok {
 			buf := exponentToBuf(pub.E)
 			buf = append(buf, pub.N.Bytes()...)
-			publicKey = buf
+			return dns.RSASHA256, buf, nil
 		}
 	case ed25519.PrivateKey:
 		algorithm = dns.ED25519
 		if pub, ok := t.Public().(ed25519.PublicKey); ok {
 			// as is bytes
-			publicKey = pub
+			return dns.ED25519, pub, nil
 		}
 	case *ecdsa.PrivateKey:
 		var intlen int
@@ -115,22 +107,41 @@ func NewSigner(logger *slog.Logger, privateKey crypto.Signer, sigTTL, refresh ti
 			algorithm = dns.ECDSAP384SHA384
 			intlen = 48
 		default:
-			return nil, fmt.Errorf("unsupported elliptic curve: %s", t.Curve.Params().Name)
+			return 0, nil, fmt.Errorf("unsupported elliptic curve: %s", t.Curve.Params().Name)
 		}
 
 		if pub, ok := t.Public().(*ecdsa.PublicKey); ok {
-			publicKey = curveToBuf(pub.X, pub.Y, intlen)
+			return algorithm, curveToBuf(pub.X, pub.Y, intlen), nil
 		}
-	default:
-		return nil, fmt.Errorf("unsupported private key type: %T", privateKey)
+	}
+
+	return 0, nil, fmt.Errorf("unsupported private key type: %T", so.PrivateKey)
+}
+
+func NewSigner(logger *slog.Logger, opts SignerOptions) (*Signer, error) {
+	if len(opts.Nameservers) == 0 {
+		return nil, fmt.Errorf("not enough nameservers specified")
+	}
+	signer := &Signer{
+		opts:          opts,
+		logger:        logger,
+		recordChannel: make(chan []dns.RR),
+	}
+	for i := range signer.records {
+		signer.records[i] = new(atomic.Pointer[SignedAnswer])
+	}
+
+	algorithm, publicKey, err := signer.opts.PublicKey()
+	if err != nil {
+		return nil, err
 	}
 
 	signer.zsk = dns.DNSKEY{
 		Hdr: dns.RR_Header{
-			Name:   signer.zone,
+			Name:   signer.Zone(),
 			Rrtype: dns.TypeDNSKEY,
 			Class:  dns.ClassINET,
-			Ttl:    signer.ttl,
+			Ttl:    TTL(signer.opts.AuthorityTTL),
 		},
 		// https://www.rfc-editor.org/rfc/rfc4034.html#section-2.1.1
 		// https://datatracker.ietf.org/doc/html/rfc4035#section-5.3.1
@@ -142,10 +153,10 @@ func NewSigner(logger *slog.Logger, privateKey crypto.Signer, sigTTL, refresh ti
 
 	signer.ksk = dns.DNSKEY{
 		Hdr: dns.RR_Header{
-			Name:   signer.zone,
+			Name:   signer.Zone(),
 			Rrtype: dns.TypeDNSKEY,
 			Class:  dns.ClassINET,
-			Ttl:    signer.ttl,
+			Ttl:    TTL(signer.opts.AuthorityTTL),
 		},
 		// https://www.rfc-editor.org/rfc/rfc4034.html#section-2.1.1
 		// https://datatracker.ietf.org/doc/html/rfc4035#section-5.3.1
@@ -168,13 +179,13 @@ func NewSigner(logger *slog.Logger, privateKey crypto.Signer, sigTTL, refresh ti
 	signer.zskDS = *zskDS
 	signer.kskDS = *kskDS
 
-	for _, n := range ns {
+	for _, n := range signer.opts.Nameservers {
 		signer.ns = append(signer.ns, &dns.NS{
 			Hdr: dns.RR_Header{
-				Name:   signer.zone,
+				Name:   signer.Zone(),
 				Rrtype: dns.TypeNS,
 				Class:  dns.ClassINET,
-				Ttl:    signer.ttl,
+				Ttl:    TTL(signer.opts.AuthorityTTL),
 			},
 			Ns: n,
 		})
@@ -245,11 +256,21 @@ func (s *Signer) Transfer() (result []*SignedAnswer) {
 	return result
 }
 
+func (s *Signer) Zone() string {
+	return s.opts.Zone
+}
+
 func (s *Signer) Get(rtype uint16) *SignedAnswer {
 	if rtype == dns.TypeSOA {
 		return s.soa.Load()
 	}
 	return s.records[rtype].Load()
+}
+
+func (s *Signer) AddAuthorityRecords() {
+	s.Add(RR(s.NS()...)...)
+	s.Add(RR(s.DS()...)...)
+	s.Add(RR(s.DNSKEY()...)...)
 }
 
 func (s *Signer) Add(rr ...dns.RR) {
@@ -309,19 +330,19 @@ func (s *Signer) NS() []*dns.NS {
 func (s *Signer) SOA(now time.Time) *dns.SOA {
 	return &dns.SOA{
 		Hdr: dns.RR_Header{
-			Name:   s.zone,
+			Name:   s.Zone(),
 			Rrtype: dns.TypeSOA,
 			Class:  dns.ClassINET,
-			Ttl:    s.ttl,
+			Ttl:    TTL(s.opts.AuthorityTTL),
 		},
 		Ns:     s.ns[0].Ns,
-		Mbox:   s.mailbox,
+		Mbox:   s.opts.Mailbox,
 		Serial: uint32(now.Unix()),
 
-		Refresh: s.refresh,
-		Retry:   s.refresh / 2,
-		Expire:  s.refresh * 100,
-		Minttl:  s.ttl / 2,
+		Refresh: TTL(s.opts.RefreshTTL),
+		Retry:   TTL(s.opts.RefreshTTL / 2),
+		Expire:  TTL(min(s.opts.RefreshTTL*100, s.opts.AuthorityTTL)),
+		Minttl:  TTL(s.opts.RefreshTTL / 2),
 	}
 }
 
@@ -331,26 +352,27 @@ func (s *Signer) sign(rr []dns.RR, now time.Time) (sig *dns.RRSIG, err error) {
 		key = &s.ksk
 	}
 
+	sigTTL := time.Duration(max(rr[0].Header().Ttl, TTL(s.opts.SignatureTTL))) * time.Second
+
 	sig = &dns.RRSIG{
 		Hdr: dns.RR_Header{
 			Name:   key.Hdr.Name,
 			Rrtype: dns.TypeRRSIG,
 			Class:  key.Hdr.Class,
-			Ttl:    s.ttl,
+			Ttl:    rr[0].Header().Ttl,
 		},
 		TypeCovered: rr[0].Header().Rrtype,
 		Labels:      uint8(dns.CountLabel(rr[0].Header().Name)),
 		OrigTtl:     rr[0].Header().Ttl,
 
-		// oh DNS, still using uint32 for time??? at least it's not int32
-		Expiration: uint32(now.Add(time.Second * time.Duration(s.ttl)).Unix()),
-		Inception:  uint32(now.Unix()),
+		Expiration: uint32(now.Add(sigTTL + ClockSkewRange).Unix()),
+		Inception:  uint32(now.Add(-s.opts.SignatureBackdate).Unix()),
 		KeyTag:     key.KeyTag(),
 		SignerName: key.Hdr.Name,
 		Algorithm:  key.Algorithm,
 	}
 
-	if err = sig.Sign(s.key, rr); err != nil {
+	if err = sig.Sign(s.opts.PrivateKey, rr); err != nil {
 		return nil, err
 	}
 	return sig, nil

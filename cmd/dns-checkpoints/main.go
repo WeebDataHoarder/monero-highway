@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -22,16 +23,19 @@ import (
 )
 
 func main() {
+	opts := DefaultSignerOptions()
+
 	apiBind := flag.String("api-bind", "127.0.0.1:19080", "address to bind the HTTP API")
 
 	bind := flag.String("bind", "0.0.0.0:15353", "address to bind DNS server to, UDP and TCP")
-	ttl := flag.Duration("ttl", time.Minute*5, "TTL to set on responses, with seconds granularity")
-	soaTTL := flag.Duration("soa-ttl", time.Hour, "SOA TTL to set on SOA responses and signatures, with seconds granularity")
-	domainZoneStr := flag.String("zone", "a.example.com.", "domain zone to reply for")
+	flag.DurationVar(&opts.RecordTTL, "ttl", opts.RecordTTL, "TTL to set on responses, with seconds granularity")
+	flag.DurationVar(&opts.AuthorityTTL, "authority-ttl", opts.AuthorityTTL, "TTL to set on authority (SOA / NS / DS / DNSKEY / etc.) responses, with seconds granularity")
+
+	flag.StringVar(&opts.Zone, "zone", opts.Zone, "domain zone to reply for")
 	//TODO: multiple
 	var nsValues utils.MultiStringFlag
 	flag.Var(&nsValues, "ns", "nameservers for the zone. Can be specified multiple times")
-	mailboxStr := flag.String("mailbox", "dns.example.com.", "mailbox for the zone SOA record")
+	flag.StringVar(&opts.Mailbox, "mailbox", opts.Mailbox, "mailbox for the zone SOA record")
 	keyFile := flag.String("key", os.Getenv("MONERO_HIGHWAY_KEY"), "DER/PEM encoded private key. Alternatively, use MONERO_HIGHWAY_KEY environment variable")
 	axfr := flag.Bool("axfr", false, "allow zone transfers via AXFR TCP transfers")
 
@@ -43,30 +47,24 @@ func main() {
 		Level: slog.LevelDebug,
 	})))
 
-	p := NewReplyPool()
-
-	recordTTL := uint32(*ttl / time.Second)
-
-	domainZone := *domainZoneStr
-	if !strings.HasSuffix(domainZone, ".") {
-		slog.Warn("-domain does not end with . suffix, adding", "domain", domainZone)
-		domainZone += "."
+	if !strings.HasSuffix(opts.Zone, ".") {
+		slog.Warn("-domain does not end with . suffix, adding", "domain", opts.Zone)
+		opts.Zone += "."
 	}
 
-	mailbox := *mailboxStr
-	if !strings.HasSuffix(mailbox, ".") {
-		slog.Warn("-mailbox does not end with . suffix, adding", "mailbox", mailbox)
-		mailbox += "."
+	if !strings.HasSuffix(opts.Mailbox, ".") {
+		slog.Warn("-mailbox does not end with . suffix, adding", "mailbox", opts.Mailbox)
+		opts.Mailbox += "."
 	}
 
 	for i, ns := range nsValues {
 		if !strings.HasSuffix(ns, ".") {
 			slog.Warn("-ns does not end with . suffix, adding", "index", i, "ns", ns)
-			nsValues[i] += "."
+			ns += "."
 		}
+		opts.Nameservers = append(opts.Nameservers, ns)
 	}
 
-	var privateKey crypto.Signer
 	if *keyFile == "" {
 		slog.Warn("no private key file provided via -key or MONERO_HIGHWAY_KEY. Generating random secp256r1 key.")
 		pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -88,7 +86,7 @@ func main() {
 
 		slog.Warn("Generated private key", "type", "secp256r1", "pem", buf)
 		_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", buf)
-		privateKey = pk
+		opts.PrivateKey = pk
 	} else {
 		keyData, err := os.ReadFile(*keyFile)
 		if err != nil {
@@ -111,20 +109,20 @@ func main() {
 					slog.Error("Failed to parse private key", "error", err, "error2", err2, "error3", err3)
 					panic(err3)
 				} else if signer, ok := key.(crypto.Signer); ok {
-					privateKey = signer
+					opts.PrivateKey = signer
 				} else {
 					panic("Private key does not implement crypto.Signer")
 				}
 			} else {
-				privateKey = key
+				opts.PrivateKey = key
 			}
 		} else {
-			privateKey = key
+			opts.PrivateKey = key
 		}
 		slog.Info("Loaded private key from file")
 	}
 
-	signer, err := NewSigner(slog.Default(), privateKey, *soaTTL, time.Minute, domainZone, mailbox, nsValues...)
+	signer, err := NewSigner(slog.Default(), opts)
 	if err != nil {
 		slog.Error("Failed to create signer", "error", err)
 		panic(err)
@@ -143,16 +141,23 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err := signer.Process(time.Duration(recordTTL) * time.Second)
+		err := signer.Process(opts.RecordTTL / 2)
 		if err != nil {
 			slog.Error("Failed to process record", "error", err)
 			panic(err)
 		}
 	}()
 
-	signer.Add(RR(signer.NS()...)...)
-	signer.Add(RR(signer.DS()...)...)
-	signer.Add(RR(signer.DNSKEY()...)...)
+	signer.AddAuthorityRecords()
+	signer.Add(&dns.A{
+		Hdr: dns.RR_Header{
+			Name:   signer.Zone(),
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    TTL(opts.RecordTTL),
+		},
+		A: net.IP{0, 0, 0, 0},
+	})
 
 	var storeState = func(ts time.Time) {
 
@@ -176,10 +181,10 @@ func main() {
 					}
 					txt = append(txt, &dns.TXT{
 						Hdr: dns.RR_Header{
-							Name:   domainZone,
+							Name:   signer.Zone(),
 							Rrtype: dns.TypeTXT,
 							Class:  dns.ClassINET,
-							Ttl:    recordTTL,
+							Ttl:    TTL(opts.RecordTTL),
 						},
 						Txt: []string{entry},
 					})
@@ -247,70 +252,16 @@ func main() {
 		time.Sleep(time.Millisecond * 10)
 	}
 
-	getHandler := func(handleAXFR bool) dns.HandlerFunc {
-		return func(w dns.ResponseWriter, r *dns.Msg) {
-			if len(r.Question) == 0 || r.Opcode != dns.OpcodeQuery {
-				return
-			}
-
-			msg := p.Get()
-			defer p.Put(msg)
-
-			for _, q := range r.Question {
-				if q.Qclass == dns.ClassINET && dns.CanonicalName(q.Name) == domainZone {
-					answer := signer.Get(q.Qtype)
-					if answer != nil {
-						var isDNSSEC bool
-						if dns0 := r.IsEdns0(); dns0 != nil {
-							isDNSSEC = dns0.Do()
-						}
-						msg.Authoritative = true
-						msg.Answer = append(msg.Answer, answer.RR...)
-						if isDNSSEC {
-							msg.Answer = append(msg.Answer, answer.Sig)
-						}
-						// disallow multiple queries to same match
-						break
-					} else if q.Qtype == dns.TypeAXFR && handleAXFR {
-
-						var isDNSSEC bool
-						if dns0 := r.IsEdns0(); dns0 != nil {
-							isDNSSEC = dns0.Do()
-						}
-						msg.Authoritative = true
-						for _, answer := range signer.Transfer() {
-							msg.Answer = append(msg.Answer, answer.RR...)
-							if isDNSSEC {
-								msg.Answer = append(msg.Answer, answer.Sig)
-							}
-						}
-						// disallow multiple queries to same match
-						break
-					}
-				}
-			}
-
-			if len(msg.Answer) > 0 {
-				// only set reply at the end
-				msg.SetReply(r)
-				_ = w.WriteMsg(msg)
-			} else {
-				msg.SetRcode(r, dns.RcodeRefused)
-				_ = w.WriteMsg(msg)
-			}
-		}
-	}
-
 	dnsServerTCP := &dns.Server{
 		Addr:    *bind,
 		Net:     "tcp",
-		Handler: getHandler(*axfr),
+		Handler: RequestHandler(signer, *axfr),
 	}
 
 	dnsServerUDP := dns.Server{
 		Addr:    *bind,
 		Net:     "udp",
-		Handler: getHandler(false),
+		Handler: RequestHandler(signer, false),
 	}
 
 	//TODO: drop privileges if given root / port 53
@@ -365,10 +316,10 @@ func main() {
 					}
 					txt = append(txt, &dns.TXT{
 						Hdr: dns.RR_Header{
-							Name:   domainZone,
+							Name:   signer.Zone(),
 							Rrtype: dns.TypeTXT,
 							Class:  dns.ClassINET,
-							Ttl:    recordTTL,
+							Ttl:    TTL(opts.RecordTTL),
 						},
 						Txt: []string{entry},
 					})
