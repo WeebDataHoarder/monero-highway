@@ -2,7 +2,7 @@ package main
 
 import "github.com/miekg/dns"
 
-func RequestHandler(signer *Signer, handleAXFR bool) dns.HandlerFunc {
+func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uint16) dns.HandlerFunc {
 	p := NewReplyPool()
 
 	return func(w dns.ResponseWriter, r *dns.Msg) {
@@ -12,6 +12,13 @@ func RequestHandler(signer *Signer, handleAXFR bool) dns.HandlerFunc {
 
 		msg := p.Get()
 		defer p.Put(msg)
+		msg.SetReply(r)
+
+		var isDNSSEC bool
+		dns0 := r.IsEdns0()
+		if dns0 != nil {
+			isDNSSEC = dns0.Do()
+		}
 
 		var validQuery bool
 
@@ -20,31 +27,19 @@ func RequestHandler(signer *Signer, handleAXFR bool) dns.HandlerFunc {
 				validQuery = true
 				answer := signer.Get(q.Qtype)
 				if answer != nil {
-					var isDNSSEC bool
-					if dns0 := r.IsEdns0(); dns0 != nil {
-						isDNSSEC = dns0.Do()
-					}
 					msg.Authoritative = true
 					msg.Answer = append(msg.Answer, answer.RR...)
 					if isDNSSEC {
 						msg.Answer = append(msg.Answer, answer.Sig)
-						msg.SetEdns0(4096, true)
 					}
 					// disallow multiple queries to same match
 					break
 				} else if q.Qtype == dns.TypeAXFR && handleAXFR {
-
-					var isDNSSEC bool
-					if dns0 := r.IsEdns0(); dns0 != nil {
-						isDNSSEC = dns0.Do()
-					}
 					msg.Authoritative = true
 					for _, answer := range signer.Transfer() {
+						// always send DNSSEC records here
 						msg.Answer = append(msg.Answer, answer.RR...)
-						if isDNSSEC {
-							msg.Answer = append(msg.Answer, answer.Sig)
-							msg.SetEdns0(4096, true)
-						}
+						msg.Answer = append(msg.Answer, answer.Sig)
 					}
 					// disallow multiple queries to same match
 					break
@@ -52,9 +47,19 @@ func RequestHandler(signer *Signer, handleAXFR bool) dns.HandlerFunc {
 			}
 		}
 
+		if udp {
+			if dns0 != nil {
+				msg.SetEdns0(udpBufferSize, true)
+				msg.Truncate(int(dns0.UDPSize()))
+			} else {
+				msg.Truncate(dns.MinMsgSize)
+			}
+		} else {
+			msg.SetEdns0(udpBufferSize, true)
+		}
+
 		if len(msg.Answer) > 0 || validQuery {
 			// only set reply at the end
-			msg.SetReply(r)
 			_ = w.WriteMsg(msg)
 		} else {
 			msg.SetRcode(r, dns.RcodeRefused)

@@ -22,7 +22,6 @@ import (
 type Signer struct {
 	opts SignerOptions
 
-	zskDS dns.DS
 	kskDS dns.DS
 
 	zsk dns.DNSKEY
@@ -62,6 +61,8 @@ func DefaultSignerOptions() SignerOptions {
 		SignatureBackdate: time.Hour * 24,
 		Zone:              "checkpoints.example.com.",
 		Mailbox:           "admin.example.com.",
+
+		FingerprintAlgorithm: dns.SHA256,
 	}
 }
 
@@ -74,6 +75,8 @@ type SignerOptions struct {
 
 	SignatureTTL      time.Duration
 	SignatureBackdate time.Duration
+
+	FingerprintAlgorithm uint8
 
 	Zone string
 
@@ -166,17 +169,16 @@ func NewSigner(logger *slog.Logger, opts SignerOptions) (*Signer, error) {
 		PublicKey: base64.StdEncoding.EncodeToString(publicKey),
 	}
 
-	zskDS := signer.zsk.ToDS(dns.SHA256)
+	zskDS := signer.zsk.ToDS(signer.opts.FingerprintAlgorithm)
 	if zskDS == nil {
 		return nil, fmt.Errorf("failed to generate DS record")
 	}
 
-	kskDS := signer.ksk.ToDS(dns.SHA256)
+	kskDS := signer.ksk.ToDS(signer.opts.FingerprintAlgorithm)
 	if kskDS == nil {
 		return nil, fmt.Errorf("failed to generate DS record")
 	}
 
-	signer.zskDS = *zskDS
 	signer.kskDS = *kskDS
 
 	for _, n := range signer.opts.Nameservers {
@@ -268,9 +270,22 @@ func (s *Signer) Get(rtype uint16) *SignedAnswer {
 }
 
 func (s *Signer) AddAuthorityRecords() {
-	s.Add(RR(s.NS()...)...)
-	s.Add(RR(s.DS()...)...)
+	s.Add(RR(s.DS())...)
 	s.Add(RR(s.DNSKEY()...)...)
+
+	// Add child DS/DNSKEY
+	var cdsRR []*dns.CDS
+	var dnskeyRR []*dns.CDNSKEY
+	for _, dnsKey := range s.DNSKEY() {
+		if dnsKey.Flags&dns.SEP > 0 {
+			dnskeyRR = append(dnskeyRR, dnsKey.ToCDNSKEY())
+			cdsRR = append(cdsRR, dnsKey.ToDS(s.opts.FingerprintAlgorithm).ToCDS())
+		}
+	}
+	s.Add(RR(cdsRR...)...)
+	s.Add(RR(dnskeyRR...)...)
+
+	s.Add(RR(s.NS()...)...)
 }
 
 func (s *Signer) Add(rr ...dns.RR) {
@@ -309,11 +324,8 @@ func (s *Signer) DNSKEY() []*dns.DNSKEY {
 	}
 }
 
-func (s *Signer) DS() []*dns.DS {
-	return []*dns.DS{
-		&s.zskDS,
-		&s.kskDS,
-	}
+func (s *Signer) DS() *dns.DS {
+	return &s.kskDS
 }
 
 func RR[T dns.RR](s ...T) (r []dns.RR) {
@@ -348,11 +360,12 @@ func (s *Signer) SOA(now time.Time) *dns.SOA {
 
 func (s *Signer) sign(rr []dns.RR, now time.Time) (sig *dns.RRSIG, err error) {
 	var key = &s.zsk
-	if rr[0].Header().Rrtype == dns.TypeDNSKEY {
+	switch rr[0].Header().Rrtype {
+	case dns.TypeDNSKEY, dns.TypeCDNSKEY, dns.TypeCDS:
 		key = &s.ksk
 	}
 
-	sigTTL := time.Duration(max(rr[0].Header().Ttl, TTL(s.opts.SignatureTTL))) * time.Second
+	sigTTL := time.Duration(max(rr[0].Header().Ttl*2, TTL(s.opts.SignatureTTL))) * time.Second
 
 	sig = &dns.RRSIG{
 		Hdr: dns.RR_Header{

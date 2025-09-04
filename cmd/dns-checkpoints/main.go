@@ -130,8 +130,7 @@ func main() {
 
 	slog.Info("DNSKEY ZSK", "record", strings.ReplaceAll(signer.DNSKEY()[0].String(), "\t", " "))
 	slog.Info("DNSKEY KSK", "record", strings.ReplaceAll(signer.DNSKEY()[1].String(), "\t", " "))
-	slog.Info("DS ZSK", "record", strings.ReplaceAll(signer.DS()[0].String(), "\t", " "))
-	slog.Info("DS KSK", "record", strings.ReplaceAll(signer.DS()[1].String(), "\t", " "))
+	slog.Info("DS KSK", "record", strings.ReplaceAll(signer.DS().String(), "\t", " "))
 	for i, ns := range signer.NS() {
 		slog.Info(fmt.Sprintf("NS%d", i+1), "record", strings.ReplaceAll(ns.String(), "\t", " "))
 	}
@@ -244,6 +243,8 @@ func main() {
 		}
 	}
 
+	const udpBufferSize = dns.DefaultMsgSize
+
 	// await for signatures
 	for {
 		if txt := signer.Get(dns.TypeNS); txt != nil {
@@ -255,13 +256,14 @@ func main() {
 	dnsServerTCP := &dns.Server{
 		Addr:    *bind,
 		Net:     "tcp",
-		Handler: RequestHandler(signer, *axfr),
+		Handler: RequestHandler(signer, false, *axfr, udpBufferSize),
 	}
 
 	dnsServerUDP := dns.Server{
 		Addr:    *bind,
 		Net:     "udp",
-		Handler: RequestHandler(signer, false),
+		Handler: RequestHandler(signer, true, false, udpBufferSize),
+		UDPSize: udpBufferSize,
 	}
 
 	//TODO: drop privileges if given root / port 53
