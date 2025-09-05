@@ -43,7 +43,7 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 						for _, answer := range signer.Transfer() {
 							// always send DNSSEC records here
 							msg.Answer = append(msg.Answer, answer.RR...)
-							if dns0 == nil /* special case for HE */ || (dns0 != nil && dns0.Do()) {
+							if answer.Sig != nil && (dns0 == nil /* special case for HE */ || (dns0 != nil && dns0.Do())) {
 								msg.Answer = append(msg.Answer, answer.Sig)
 							}
 						}
