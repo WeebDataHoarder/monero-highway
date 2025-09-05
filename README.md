@@ -28,13 +28,41 @@ All records are signed locally. Any other DNS resolvers or slave DNS servers wil
 
 ### Usage
 
-Following examples assume Go 1.24 is available locally for launching the command. You can also pre-compile a static binary for direct usage.
+#### Compilation
+Following examples assume Go 1.24 is available locally for launching the command.
+
+Pre-compile a static binary for direct usage:
 
 ```
-$ CGO_ENABLED=0 go build -v -o ./dns-checkpoints.bin ./cmd/dns-checkpoints 
+$ CGO_ENABLED=0 go build -trimpath -v \
+-tags=purego,netgo -ldflags="-buildid= -bindnow -extldflags '-static'" -buildmode pie \
+-o ./dns-checkpoints.bin ./cmd/dns-checkpoints 
 
 $ ./dns-checkpoints.bin -help
 ```
+
+These specific flags enable additional binary hardening on the resulting program.
+
+#### Binding to low numbered ports
+If you are binding to port 53, you probably need to allow this on the binary via running with elevated permissions (not recommended) or via `setcap`:
+```
+# CAP_NET_BIND_SERVICE: Bind a socket to Internet domain privileged ports (port numbers less than 1024).
+# flags: e = effective, i = inheritable, p = permitted
+# inheritable is not needed.
+sudo setcap CAP_NET_BIND_SERVICE=+ep ./dns-checkpoints.bin
+```
+
+This will allow this specific binary to bind to low-numbered ports. Note you must do this if you recompile the binary.
+
+#### Allow ports in firewall
+
+You must allow incoming and outgoing TCP/UDP traffic on port 53. If using UFW, use:
+```
+sudo ufw allow out 53
+sudo ufw allow in 53
+```
+
+#### Running
 
 If `-key` or `MONERO_HIGHWAY_KEY` env var is not specified, a random ECDSA key will be generated and printed to console, which can be used in future invocations.
 
@@ -43,8 +71,8 @@ State can be stored for startup via `-state`, otherwise new state needs to get f
 Example with multiple NS while authority is at `ns1-checkpoints.example.com` for the zone `checkpoints.example.com`
 
 ```
-go run ./cmd/dns-checkpoints  \
--bind 0.0.0.0:15353 \
+./dns-checkpoints.bin  \
+-bind 0.0.0.0:53 \
 -api-bind 127.0.0.1:19080 \
 -key key.sample \
 -state state.sample.json \
