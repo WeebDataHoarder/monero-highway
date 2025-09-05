@@ -294,13 +294,18 @@ func (s *Signer) Transfer() (result []*SignedAnswer) {
 	if soa == nil {
 		return
 	}
+	result = append(result, &SignedAnswer{
+		RR: soa.RR,
+	})
 	result = append(result, soa)
 	for _, r := range s.records {
 		if rr := r.Load(); rr != nil {
 			result = append(result, rr)
 		}
 	}
-	result = append(result, soa)
+	result = append(result, &SignedAnswer{
+		RR: soa.RR,
+	})
 	return result
 }
 
@@ -324,7 +329,7 @@ func (s *Signer) AddAuthorityRecords() {
 	if err != nil {
 		panic(err)
 	}
-	s.Add(RR(s.DS())...)
+	//s.Add(RR(s.DS())...)
 	s.Add(RR(s.DNSKEY()...)...)
 
 	// Add child DS/DNSKEY
