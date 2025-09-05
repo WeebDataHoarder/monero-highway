@@ -43,7 +43,7 @@ $ ./dns-checkpoints.bin -help
 
 These specific flags enable additional binary hardening on the resulting program.
 
-#### Binding to low numbered ports
+#### Binding to low numbered ports and privileges
 If you are binding to port 53, you probably need to allow this on the binary via running with elevated permissions (not recommended) or via `setcap`:
 ```
 # CAP_NET_BIND_SERVICE: Bind a socket to Internet domain privileged ports (port numbers less than 1024).
@@ -53,6 +53,8 @@ sudo setcap CAP_NET_BIND_SERVICE=+ep ./dns-checkpoints.bin
 ```
 
 This will allow this specific binary to bind to low-numbered ports. Note you must do this if you recompile the binary.
+
+If you'd like to drop privileges to a specific user, you can use `sudo setpriv --reuid=99 --regid=99 --clear-groups ./dns-checkpoints.bin [.....]` when calling the binary. This will drop the binary to user id 99 and group id 99 (in most Ubuntu/Debian, www-data).
 
 #### Allow ports in firewall
 
