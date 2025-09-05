@@ -144,7 +144,6 @@ func main() {
 		if err != nil {
 			key, err2 := x509.ParsePKCS1PrivateKey(keyData)
 			if err2 != nil {
-				slog.Error("Failed to parse private key", "error", err, "error2", err2)
 				key, err3 := x509.ParsePKCS8PrivateKey(keyData)
 				if err3 != nil {
 					slog.Error("Failed to parse private key", "error", err, "error2", err2, "error3", err3)
