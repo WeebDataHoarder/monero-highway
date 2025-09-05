@@ -3,8 +3,10 @@ package main
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -35,6 +37,7 @@ func main() {
 	var nsValues utils.MultiStringFlag
 	flag.Var(&nsValues, "ns", "nameservers for the zone. Can be specified multiple times")
 	flag.StringVar(&opts.Mailbox, "mailbox", opts.Mailbox, "mailbox for the zone SOA record")
+	keyType := flag.String("generate-key-type", "ed25519", "type of key to generate, allowed values (ed25519, secp256r1, secp384r1, rsa2048, rsa4096)")
 	keyFile := flag.String("key", os.Getenv("MONERO_HIGHWAY_KEY"), "DER/PEM encoded private key. Alternatively, use MONERO_HIGHWAY_KEY environment variable")
 	axfr := flag.Bool("axfr", false, "allow zone transfers via AXFR TCP transfers")
 
@@ -65,27 +68,62 @@ func main() {
 	}
 
 	if *keyFile == "" {
-		slog.Warn("no private key file provided via -key or MONERO_HIGHWAY_KEY. Generating random secp256r1 key.")
-		pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			slog.Error("Failed to generate private key", "error", err)
-			panic(err)
+		slog.Warn("no private key file provided via -key or MONERO_HIGHWAY_KEY. Generating random key.")
+		var der []byte
+		switch *keyType {
+		default:
+			slog.Error("Unknown key type", "type", *keyType)
+			panic("unknown key type")
+		case "ed25519", "":
+			*keyType = "ed25519"
+			_, pk, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				slog.Error("Failed to generate private key", "error", err)
+				panic(err)
+			}
+			opts.PrivateKey = pk
+		case "secp256r1", "prime256v1", "secp384r1":
+			var pk *ecdsa.PrivateKey
+			var err error
+			if *keyType == "secp256r1" || *keyType == "prime256v1" {
+				pk, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			} else {
+				pk, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+			}
+			if err != nil {
+				slog.Error("Failed to generate private key", "error", err)
+				panic(err)
+			}
+			opts.PrivateKey = pk
+		case "rsa2048", "rsa4096":
+			var pk *rsa.PrivateKey
+			var err error
+			if *keyType == "rsa2048" {
+				pk, err = rsa.GenerateKey(rand.Reader, 2048)
+			} else {
+				pk, err = rsa.GenerateKey(rand.Reader, 4096)
+			}
+			if err != nil {
+				slog.Error("Failed to generate private key", "error", err)
+				panic(err)
+			}
+			opts.PrivateKey = pk
 		}
-		der, err := x509.MarshalECPrivateKey(pk)
+
+		der, err := x509.MarshalPKCS8PrivateKey(opts.PrivateKey)
 		if err != nil {
 			slog.Error("Failed to marshal private key", "error", err)
 			panic(err)
 		}
-		pb := &pem.Block{Type: "EC PRIVATE KEY", Bytes: der}
+		pb := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
 		buf := pem.EncodeToMemory(pb)
 		if buf == nil {
 			slog.Error("Failed to encode private key")
 			panic("Failed to encode private key")
 		}
 
-		slog.Warn("Generated private key", "type", "secp256r1", "pem", buf)
+		slog.Warn("Generated private key", "type", *keyType, "pem", buf)
 		_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", buf)
-		opts.PrivateKey = pk
 	} else {
 		keyData, err := os.ReadFile(*keyFile)
 		if err != nil {
