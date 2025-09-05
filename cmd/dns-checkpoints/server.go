@@ -14,7 +14,6 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 		defer p.Put(msg)
 		msg.SetReply(r)
 
-		var isDNSSEC bool
 		dns0 := r.IsEdns0()
 		if dns0 != nil {
 			if dns0.Version() != 0 {
@@ -24,8 +23,7 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 				return
 			}
 
-			isDNSSEC = dns0.Do()
-			msg.SetEdns0(udpBufferSize, isDNSSEC)
+			msg.SetEdns0(udpBufferSize, dns0.Do())
 		}
 
 		zoneLabels := len(signer.ZoneLabels())
@@ -38,21 +36,23 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 					answer := signer.Get(q.Qtype)
 					if answer != nil {
 						msg.Answer = append(msg.Answer, answer.RR...)
-						if isDNSSEC {
+						if dns0 != nil && dns0.Do() {
 							msg.Answer = append(msg.Answer, answer.Sig)
 						}
-						// disallow multiple queries to same match
-						break
-					} else if q.Qtype == dns.TypeAXFR && handleAXFR {
+					} else if q.Qtype == dns.TypeAXFR && handleAXFR && !udp {
 						for _, answer := range signer.Transfer() {
 							// always send DNSSEC records here
 							msg.Answer = append(msg.Answer, answer.RR...)
-							msg.Answer = append(msg.Answer, answer.Sig)
+							if dns0 == nil /* special case for HE */ || (dns0 != nil && dns0.Do()) {
+								msg.Answer = append(msg.Answer, answer.Sig)
+							}
 						}
-						// disallow multiple queries to same match
-						break
+						if dns0 == nil {
+							// set DO flags
+							msg.SetEdns0(udpBufferSize, true)
+						}
 					} else {
-						if isDNSSEC {
+						if dns0 != nil && dns0.Do() {
 							soa := signer.Get(dns.TypeSOA)
 							msg.Ns = append(msg.Ns, soa.RR...)
 							msg.Ns = append(msg.Ns, soa.Sig)
@@ -60,12 +60,13 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 							msg.Ns = append(msg.Ns, nsec.RR...)
 							msg.Ns = append(msg.Ns, nsec.Sig)
 						}
-						break
 					}
+					// disallow multiple queries to same match
+					break
 				} else if cnt > zoneLabels {
 					msg.Authoritative = true
 					msg.SetRcode(r, dns.RcodeNameError)
-					if isDNSSEC {
+					if dns0 != nil && dns0.Do() {
 						soa := signer.Get(dns.TypeSOA)
 						msg.Ns = append(msg.Ns, soa.RR...)
 						msg.Ns = append(msg.Ns, soa.Sig)
