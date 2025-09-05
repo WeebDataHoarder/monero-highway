@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -39,7 +40,10 @@ func main() {
 	flag.StringVar(&opts.Mailbox, "mailbox", opts.Mailbox, "mailbox for the zone SOA record")
 	keyType := flag.String("generate-key-type", "ed25519", "type of key to generate, allowed values (ed25519, secp256r1, secp384r1, rsa2048, rsa4096)")
 	keyFile := flag.String("key", os.Getenv("MONERO_HIGHWAY_KEY"), "DER/PEM encoded private key. Alternatively, use MONERO_HIGHWAY_KEY environment variable")
+
+	var axfrNotify utils.MultiStringFlag
 	axfr := flag.Bool("axfr", false, "allow zone transfers via AXFR TCP transfers")
+	flag.Var(&axfrNotify, "axfr-notify", "servers or addresses with defined port to NOTIFY for a desired AXFR transfer")
 
 	state := flag.String("state", "", "state file to preserve set TXT records to load on startup. A temporary file will be created next to it.")
 
@@ -172,7 +176,57 @@ func main() {
 		slog.Info(fmt.Sprintf("NS%d", i+1), "record", strings.ReplaceAll(ns.String(), "\t", " "))
 	}
 
+	const udpBufferSize = dns.DefaultMsgSize
+
 	var wg sync.WaitGroup
+	notifyChannel := make(chan struct{})
+
+	sendNotify := func() {
+		select {
+		case notifyChannel <- struct{}{}:
+		default:
+		}
+	}
+
+	if len(axfrNotify) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			client := new(dns.Client)
+
+			for range notifyChannel {
+				var msg dns.Msg
+				msg.SetNotify(signer.Zone())
+				msg.SetEdns0(udpBufferSize, true)
+				soa := signer.Get(dns.TypeSOA)
+				if soa == nil {
+					continue
+				}
+				msg.Answer = append(msg.Answer, soa.RR...)
+				msg.Answer = append(msg.Answer, soa.Sig)
+				for _, q := range axfrNotify {
+					func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+
+						resp, _, err := client.ExchangeContext(ctx, &msg, q)
+						if err != nil {
+							slog.Error("Sent NOTIFY to server, received error", "server", q, "error", err)
+							return
+						}
+						if resp.Rcode != dns.RcodeSuccess {
+							slog.Debug("Sent NOTIFY to server, received code", "server", q, "code", resp.Rcode)
+						} else {
+							slog.Debug("Sent NOTIFY to server success", "server", q, "code", resp.Rcode)
+						}
+					}()
+
+				}
+			}
+
+		}()
+	}
 
 	wg.Add(1)
 	go func() {
@@ -271,8 +325,6 @@ func main() {
 		}
 	}
 
-	const udpBufferSize = dns.DefaultMsgSize
-
 	// await for signatures
 	for {
 		if txt := signer.Get(dns.TypeNS); txt != nil {
@@ -332,8 +384,11 @@ func main() {
 				}
 				now := time.Now()
 				defer func() {
-					time.Sleep(time.Second * 5)
-					storeState(now)
+					go func() {
+						time.Sleep(time.Second * 5)
+						sendNotify()
+						storeState(now)
+					}()
 				}()
 
 				values := r.URL.Query()
@@ -366,6 +421,8 @@ func main() {
 			}
 		}()
 	}
+
+	sendNotify()
 
 	wg.Wait()
 	slog.Error("Exiting, no active servers")

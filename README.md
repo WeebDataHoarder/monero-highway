@@ -42,6 +42,8 @@ go run ./cmd/dns-checkpoints  \
 -ns ns2.1984hosting.com \
 -ns ns1.he.net \
 -axfr
+-axfr-notify dnslave.1984.is:53
+-axfr-notify ns1.he.net:53
 ```
 
 The server will start and produce some logs. Take note of the `DNS KSK` message, you will need it.
@@ -154,8 +156,13 @@ Via Zone transfers (AXFR) slave servers are supported. This can allow to maintai
 
 You can also run your own slave nameservers with your preferred DNS server software and setting the main DNS server as master.
 
+NOTIFY is supported and will be sent to upstream servers when records are updated (not when signatures are updated, to prevent spam)
+
 #### 1984 Hosting
  * Free of charge
+ * Refreshes on set cadence (five minutes)
+* Fetches records from `dnslave.1984.is` (IPv4 `93.95.224.6`)
+ * Supports NOTIFY for instant refresh on `dnslave.1984.is:53`
  * https://1984.hosting/product/freedns/
  * Nameservers
    * ns0.1984.is
@@ -166,6 +173,10 @@ You can also run your own slave nameservers with your preferred DNS server softw
    
 #### Hurricane Electric
 * Free of charge
+* Refreshes on set cadence (one to two minutes)
+* Updates every 10 minutes as fallback
+* Fetches records from `slave.dns.he.net` (IPv4 `216.218.133.2` IPv6 `2001:470:600::2`)
+* Supports NOTIFY for semi-instant refresh on `ns1.he.net:53`
 * https://dns.he.net/
 * Nameservers
     * ns1.he.net
@@ -176,7 +187,7 @@ You can also run your own slave nameservers with your preferred DNS server softw
 
 #### FreeDNS Afraid.org
 * Free of charge
-* Slow updates, TTL of one hour
+* Slow updates, updates of one hour
 * https://freedns.afraid.org/
 * Nameservers
     * ns2.afraid.org
