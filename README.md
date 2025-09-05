@@ -7,11 +7,24 @@ A simple TCP/UDP DNS server that acts as a zone server for a subdomain whose onl
 
 Effectively it is designed to serve MoneroPulse DNS Checkpoints as fast and cheap as possible while keeping full control of signing keys.
 
-Supports ECDSA, Ed25519, RSA keys. Zone transfers (AXFR) are supported via TCP. Slave DNS servers can be hosted this way.
+Supports Ed25519, ECDSA, RSA keys. Zone transfers (AXFR) are supported via TCP. Slave DNS servers can be hosted this way.
 
 Simple update HTTP API. Adjustable TTL.
 
 Written via [meikg/dns](https://github.com/miekg/dns) as DNS library, [used by many](https://github.com/miekg/dns?tab=readme-ov-file#users)
+
+### DNSSEC Notes
+
+Although Ed25519, ECDSA, RSA are supported, it's recommended to use ECDSA or Ed25519 for size.
+Preferably we'd be using Ed25519, but see [Ed25519.no](https://ed25519.no/) for deployment statistics and an [older APNIC blog](https://labs.apnic.net/index.php/2021/06/17/dnssec-with-ed25519/).
+The most supported key is ECDSA P-256/P-384, but nowadays Ed25519 has come closer to these. Don't use RSA, signatures are too big.
+
+A single key is used both for KSK (Key Signing Key) and ZSK (Zone Signing Key). This is commonly referred CSK (Common Signing Key), reducing operational complexity. [See more](https://miek.nl/2023/november/04/dnssec-too-complex/).
+Additionally CDS/CDNSKEY records are published, for this same key.
+
+Proof of Non-Existence is done via a single NSEC record pointing to the zone apex, with the relevant types. No other subdomains are allowed, so this works perfectly.
+
+All records are signed locally. Any other DNS resolvers or slave DNS servers will fetch pre-signed records, so they don't need DNSSEC keys.
 
 ### Usage
 
@@ -41,6 +54,7 @@ go run ./cmd/dns-checkpoints  \
 -ns ns0.1984.is \
 -ns ns2.1984hosting.com \
 -ns ns1.he.net \
+-ns ns4.he.net \
 -axfr
 -axfr-notify dnslave.1984.is:53
 -axfr-notify ns1.he.net:53
@@ -58,7 +72,7 @@ Add the DNS server IP on your slave DNS servers so they can fetch AXFR from your
 
 * A/AAAA or CNAME `ns1-checkpoints.example.com` Point to your main nameserver IP/host. Optional if hidden.
 * DS `checkpoints.example.com` Composed of the key tag, algorithm, digest and fingerprint. In our DS KSK example, it's 7820, 13, 2 (SHA256) and `821887C3654ACCD2DEA3AC14E7E05C9D324B9EFBF26ECBF30047B3DDB4DBF4F3` respectively.
-* NS `checkpoints.example.com` One for each primary and secondary nameserver. In current example, one for each of `ns1-checkpoints.example.com, ns0.1984.is, ns2.1984hosting.com, ns1.he.net`
+* NS `checkpoints.example.com` One for each primary and secondary nameserver. In current example, one for each of `ns1-checkpoints.example.com, ns0.1984.is, ns2.1984hosting.com, ns1.he.net, ns4.he.net`
 
 With this (and after records have passed over) you should be able to verify it working with a dns utility like `dig`
 
@@ -156,7 +170,7 @@ Via Zone transfers (AXFR) slave servers are supported. This can allow to maintai
 
 You can also run your own slave nameservers with your preferred DNS server software and setting the main DNS server as master.
 
-NOTIFY is supported and will be sent to upstream servers when records are updated (not when signatures are updated, to prevent spam)
+NOTIFY is supported and will be sent to upstream servers when records are updated (not when signatures are updated, to prevent spam).
 
 #### 1984 Hosting
  * Free of charge
