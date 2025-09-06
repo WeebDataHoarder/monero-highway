@@ -203,7 +203,6 @@ func main() {
 					continue
 				}
 				msg.Answer = append(msg.Answer, soa.RR...)
-				msg.Answer = append(msg.Answer, soa.Sig)
 				for _, q := range axfrNotify {
 					func() {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -7,7 +7,7 @@ A simple TCP/UDP DNS server that acts as a zone server for a subdomain whose onl
 
 Effectively it is designed to serve MoneroPulse DNS Checkpoints as fast and cheap as possible while keeping full control of signing keys.
 
-Supports Ed25519, ECDSA, RSA keys. Zone transfers (AXFR) are supported via TCP. Slave DNS servers can be hosted this way.
+Supports Ed25519, ECDSA, RSA keys. Zone transfers (AXFR/IXFR) are supported via TCP. Slave DNS servers can be hosted this way.
 
 Simple update HTTP API. Adjustable TTL.
 
@@ -197,6 +197,8 @@ checkpoints.example.com. 300 IN   TXT     "ghi890"
 ### FreeDNS slave providers
 
 Via Zone transfers (AXFR) slave servers are supported. This can allow to maintain control of keys but have a wide DNS network, or keep the master server hidden.
+
+Incremental Zone Transfers (IXFR) queries will also be answered, but the reply will always be a full AXFR when a SOA change is detected.
 
 You can also run your own slave nameservers with your preferred DNS server software and setting the main DNS server as master.
 

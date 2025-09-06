@@ -51,6 +51,34 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 							// set DO flags
 							msg.SetEdns0(udpBufferSize, true)
 						}
+					} else if q.Qtype == dns.TypeIXFR && handleAXFR && !udp {
+						if len(r.Answer) == 1 {
+							rr := r.Answer[0]
+							if soa, ok := rr.(*dns.SOA); ok {
+								if currentSOA := signer.Get(dns.TypeSOA); currentSOA == nil || len(currentSOA.RR) == 0 {
+									// abort
+									break
+								} else if cSoa, ok := currentSOA.RR[0].(*dns.SOA); !ok {
+									// abort
+									break
+								} else if cSoa.Serial == soa.Serial {
+									// abort
+									break
+								}
+							}
+						}
+						// send normal AXFR response now
+						for _, answer := range signer.Transfer() {
+							// always send DNSSEC records here
+							msg.Answer = append(msg.Answer, answer.RR...)
+							if answer.Sig != nil && (dns0 == nil /* special case for HE */ || (dns0 != nil && dns0.Do())) {
+								msg.Answer = append(msg.Answer, answer.Sig)
+							}
+						}
+						if dns0 == nil {
+							// set DO flags
+							msg.SetEdns0(udpBufferSize, true)
+						}
 					} else {
 						if dns0 != nil && dns0.Do() {
 							soa := signer.Get(dns.TypeSOA)
@@ -61,8 +89,6 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 							msg.Ns = append(msg.Ns, nsec.Sig)
 						}
 					}
-					// disallow multiple queries to same match
-					break
 				} else if cnt > zoneLabels {
 					msg.Authoritative = true
 					msg.SetRcode(r, dns.RcodeNameError)
@@ -74,12 +100,12 @@ func RequestHandler(signer *Signer, udp bool, handleAXFR bool, udpBufferSize uin
 						msg.Ns = append(msg.Ns, nsec.RR...)
 						msg.Ns = append(msg.Ns, nsec.Sig)
 					}
-					break
 				} else {
 					msg.SetRcode(r, dns.RcodeRefused)
-					break
 				}
 			}
+			// disallow multiple queries to same match
+			break
 		}
 
 		if udp {

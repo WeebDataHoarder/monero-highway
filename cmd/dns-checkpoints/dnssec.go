@@ -297,7 +297,6 @@ func (s *Signer) Transfer() (result []*SignedAnswer) {
 	result = append(result, &SignedAnswer{
 		RR: soa.RR,
 	})
-	result = append(result, soa)
 	for _, r := range s.records {
 		if rr := r.Load(); rr != nil {
 			result = append(result, rr)
