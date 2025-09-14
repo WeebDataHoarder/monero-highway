@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -14,13 +15,15 @@ import (
 	"git.gammaspectra.live/P2Pool/consensus/v4/monero/client/zmq"
 	"git.gammaspectra.live/P2Pool/consensus/v4/types"
 	"git.gammaspectra.live/P2Pool/monero-highway/internal/highway/checkpoint"
+	"github.com/goccy/go-yaml"
 )
 
 func main() {
 	rpcUrl := flag.String("rpc", "http://127.0.0.1:18081", "Monero RPC server URL. Can be restricted")
 	zmqAddr := flag.String("zmq", "tcp://127.0.0.1:18083", "Monero ZMQ-PUB server address")
-	statePath := flag.String("state", "checkpoints.txt", "File where to save checkpoint state. Directory where it is emplaced must be writable and on same mount")
 
+	pushConfigPath := flag.String("push-config", "", "Path to YAML file to push records")
+	checkpointStatePath := flag.String("checkpoint-state", "checkpoints.txt", "File where to save checkpoint state. Directory where it is emplaced must be writable and on same mount")
 	checkpointDepth := flag.Uint64("checkpoint-depth", 2, "Depth from tip to place checkpoints at. Depth of 2, means tip height of 100 will checkpoint 98")
 
 	flag.Parse()
@@ -28,6 +31,26 @@ func main() {
 	httpClient := &http.Client{
 		Transport: &http.Transport{},
 		Timeout:   time.Second * 30,
+	}
+
+	dialer := &net.Dialer{
+		Timeout: time.Second * 10,
+	}
+
+	var checkpointers []checkpoint.Config
+
+	if *pushConfigPath != "" {
+		pushConfigData, err := os.ReadFile(*pushConfigPath)
+		if err != nil {
+			slog.Error("Failed to read push config", "err", err)
+			panic(err)
+		}
+		err = yaml.NewDecoder(bytes.NewReader(pushConfigData), yaml.UseJSONUnmarshaler()).Decode(&checkpointers)
+		if err != nil {
+			slog.Error("Failed to parse push config", "err", err)
+			panic(err)
+		}
+		slog.Info(fmt.Sprintf("Loaded push config with %d entries", len(checkpointers)))
 	}
 
 	monerod, err := NewDaemon(*rpcUrl, httpClient, time.Second*30)
@@ -39,8 +62,8 @@ func main() {
 	var check checkpoint.Checkpoint
 	//TODO: get from DNS?
 
-	if *statePath != "" {
-		stateData, err := os.ReadFile(*statePath)
+	if *checkpointStatePath != "" {
+		stateData, err := os.ReadFile(*checkpointStatePath)
 		if err != nil {
 			slog.Error("Error reading state file", "error", err)
 		} else {
@@ -138,12 +161,23 @@ func main() {
 				tipCheckpoint = newCheckpoint
 
 				slog.Info("New checkpoint", "height", newCheckpoint.Height, "id", newCheckpoint.Id)
-				if *statePath != "" {
+				if *checkpointStatePath != "" {
 					// atomically write new ones before pushing
-					err = WriteFile(*statePath, []byte(check.String()), 0777)
+					err = WriteFile(*checkpointStatePath, []byte(check.String()), 0777)
 					if err != nil {
 						slog.Error("Error writing checkpoint file", "error", err)
 						panic(err)
+					}
+				}
+
+				// deadline for each
+				for i, c := range checkpointers {
+					if err := func() error {
+						ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+						defer cancel()
+						return c.Send(dialer, ctx, checkpoint.Checkpoints{check})
+					}(); err != nil {
+						slog.Error("Error sending checkpoint", "index", i, "error", err)
 					}
 				}
 

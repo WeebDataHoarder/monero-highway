@@ -1,0 +1,23 @@
+- method: highway-dns
+  # Uses an API compatible with https://git.gammaspectra.live/P2Pool/monero-highway#cmd-dns-checkpoints
+  config:
+    url: http://127.0.0.1:19080
+
+- method: cloudflare
+  config:
+    # Cloudflare API token (not KEY).
+    # Can be passed via environment variable CLOUDFLARE_API_TOKEN
+    # Preferably: use one CLOUDFLARE_API_TOKEN for all needed accounts, and add rights onto this token instead
+    #
+    # Create API tokens here https://dash.cloudflare.com/profile/api-tokens
+    # Select Permissions -> Zone -> DNS -> Edit
+    # Select Zone Resources -> Include -> Specific zone -> Choose zone example.com
+    # (repeat last step until all zones are added)
+    #
+    # api-token: CLOUDFLARE_API_TOKEN
+
+    # zone-id must be set to the Zone ID shown in Overview -> API for example.com
+    zone-id: "$ZONE_ID"
+    name: "testpoints.example.com"
+    # TTL in seconds
+    ttl: 60
