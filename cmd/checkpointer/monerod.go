@@ -190,7 +190,10 @@ func (d *Daemon) HeaderById(id types.Hash) (*BlockHeader, error) {
 	if h := d.headerById(id); h != nil {
 		return h, nil
 	}
+	return d.FetchHeaderById(id)
+}
 
+func (d *Daemon) FetchHeaderById(id types.Hash) (*BlockHeader, error) {
 	<-d.rateLimit.C
 	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
 	defer cancel()

@@ -167,6 +167,13 @@ func main() {
 				tipCheckpoint = newCheckpoint
 
 				slog.Info("New checkpoint", "height", newCheckpoint.Height, "id", newCheckpoint.Id)
+
+				// sanity check: does monerod have the block?
+				if _, err := monerod.FetchHeaderById(check.Id); err != nil {
+					slog.Error("Error fetching checkpoint", "height", newCheckpoint.Height, "id", newCheckpoint.Id, "error", err)
+					panic(err)
+				}
+
 				if *checkpointStatePath != "" {
 					// atomically write new ones before pushing
 					err = WriteFile(*checkpointStatePath, []byte(check.String()), 0777)
@@ -176,6 +183,7 @@ func main() {
 					}
 				}
 
+				// Send updates to checkpointers
 				// deadline for each
 				for i, c := range checkpointers {
 					if err := func() error {
@@ -184,10 +192,9 @@ func main() {
 						return c.Send(dialer, ctx, checkpoint.Checkpoints{check})
 					}(); err != nil {
 						slog.Error("Error sending checkpoint", "index", i, "error", err)
+						// errors are fine
 					}
 				}
-
-				//TODO: submit updates
 			}
 
 			tip = newTip
