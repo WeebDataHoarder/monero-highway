@@ -125,7 +125,14 @@ func main() {
 				slog.Error("Error getting tip", "error", err)
 				panic(err)
 			}
-			if newTip.Id == tip.Id || tipCheckpoint == nil {
+			if newTip.Id == tip.Id {
+				// wait
+				select {
+				case <-fallbackTimer:
+				case h := <-tipNotifier:
+					slog.Info("Got tip notification", "height", h.Height, "id", h.Id)
+				}
+
 				// same
 				continue
 			}
@@ -198,13 +205,6 @@ func main() {
 			}
 
 			tip = newTip
-
-			// wait
-			select {
-			case <-fallbackTimer:
-			case h := <-tipNotifier:
-				slog.Info("Got tip notification", "height", h.Height, "id", h.Id)
-			}
 		}
 	}()
 
