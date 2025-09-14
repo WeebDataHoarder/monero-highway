@@ -110,6 +110,12 @@ func main() {
 				slog.Error("Error getting checkpoint walking tips", "error", err)
 				panic(err)
 			}
+
+			if ok, reason := monerod.HeaderIncluded(tip, tipCheckpoint); !ok {
+				slog.Error("Tip does not include old checkpoint", "reason", reason)
+				// we have reorg'd! this is not compatible and we have to wait till monero reorgs. keep crashing until we have a valid condition
+				panic(reason)
+			}
 		}
 
 		fallbackTimer := time.Tick(time.Second * 30)
@@ -133,7 +139,7 @@ func main() {
 			if tipCheckpoint != nil {
 				if ok, reason := monerod.HeaderIncluded(newTip, tipCheckpoint); !ok {
 					slog.Error("New tip does not include old checkpoint", "reason", reason)
-					// we have reorg'd!
+					// we have reorg'd! this is not compatible and we have to wait till monero reorgs. keep crashing until we have a valid condition
 					panic(reason)
 				}
 			}
