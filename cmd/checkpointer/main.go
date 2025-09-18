@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -92,13 +93,23 @@ func main() {
 		defer wg.Done()
 
 		var intervalTicker <-chan time.Time
-		if *checkpointInterval == 0 {
+		if *checkpointInterval <= 0 {
 			// special case
 			channel := make(chan time.Time)
 			close(channel)
 			intervalTicker = channel
 		} else {
-			intervalTicker = time.Tick(*checkpointInterval)
+			if *checkpointInterval/20 > 0 {
+				channel := make(chan time.Time)
+				go func() {
+					// add 5% fuzz interval over expected interval
+					time.Sleep(*checkpointInterval + time.Duration(rand.Int64N(int64(*checkpointInterval/20))))
+					channel <- time.Now()
+				}()
+				intervalTicker = channel
+			} else {
+				intervalTicker = time.Tick(*checkpointInterval)
+			}
 		}
 
 		tip, err := monerod.HeaderTip()
