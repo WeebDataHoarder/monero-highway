@@ -25,6 +25,7 @@ func main() {
 	pushConfigPath := flag.String("push-config", "", "Path to YAML file to push records")
 	checkpointStatePath := flag.String("checkpoint-state", "checkpoints.txt", "File where to save checkpoint state. Directory where it is emplaced must be writable and on same mount")
 	checkpointDepth := flag.Uint64("checkpoint-depth", 2, "Depth from tip to place checkpoints at. Depth of 2, means tip height of 100 will checkpoint 98")
+	checkpointInterval := flag.Duration("checkpoint-interval", 0, "Interval when checkpoints will be set. Default zero, checkpoint instantly. Recommended: 5m")
 
 	flag.Parse()
 
@@ -90,6 +91,16 @@ func main() {
 	go func() {
 		defer wg.Done()
 
+		var intervalTicker <-chan time.Time
+		if *checkpointInterval == 0 {
+			// special case
+			channel := make(chan time.Time)
+			close(channel)
+			intervalTicker = channel
+		} else {
+			intervalTicker = time.Tick(*checkpointInterval)
+		}
+
 		tip, err := monerod.HeaderTip()
 		if err != nil {
 			slog.Error("Error getting tip", "error", err)
@@ -98,7 +109,7 @@ func main() {
 			slog.Error("Error getting walking tips", "error", err)
 			panic(err)
 		}
-		slog.Info("New tip", "height", tip.Height, "id", tip.Id)
+		slog.Info("Initial tip", "height", tip.Height, "id", tip.Id)
 
 		var tipCheckpoint *BlockHeader
 		if check.Id != types.ZeroHash {
@@ -119,16 +130,21 @@ func main() {
 		}
 
 		fallbackTimer := time.Tick(time.Second * 30)
+		var checkedTicker bool
 		for {
 			newTip, err := monerod.HeaderTip()
 			if err != nil {
 				slog.Error("Error getting tip", "error", err)
 				panic(err)
 			}
-			if newTip.Id == tip.Id {
+
+			if newTip.Id == tip.Id && !checkedTicker {
 				// wait
+				checkedTicker = false
 				select {
 				case <-fallbackTimer:
+				case <-intervalTicker:
+					checkedTicker = true
 				case h := <-tipNotifier:
 					slog.Info("Got tip notification", "height", h.Height, "id", h.Id)
 				}
@@ -136,11 +152,23 @@ func main() {
 				// same
 				continue
 			}
-			slog.Info("New tip", "height", newTip.Height, "id", newTip.Id)
+			slog.Info("Tip", "height", newTip.Height, "id", newTip.Id)
 
 			if ok, reason := monerod.HeaderIncluded(newTip, tip); !ok {
 				slog.Error("New tip does not include old tip chain", "reason", reason)
 				// we have reorg'd!
+			}
+
+			if !checkedTicker {
+				select {
+				case <-intervalTicker:
+				default:
+
+					tip = newTip
+					slog.Info("Checkpoint interval not reached, delaying")
+					// sleep again
+					continue
+				}
 			}
 
 			if tipCheckpoint != nil {
@@ -205,6 +233,7 @@ func main() {
 			}
 
 			tip = newTip
+			checkedTicker = false
 		}
 	}()
 
