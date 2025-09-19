@@ -102,9 +102,11 @@ func main() {
 			if *checkpointInterval/20 > 0 {
 				channel := make(chan time.Time)
 				go func() {
-					// add 5% fuzz interval over expected interval
-					time.Sleep(*checkpointInterval + time.Duration(rand.Int64N(int64(*checkpointInterval/20))))
-					channel <- time.Now()
+					for {
+						// add 5% fuzz interval over expected interval
+						time.Sleep(*checkpointInterval + time.Duration(rand.Int64N(int64(*checkpointInterval/20))))
+						channel <- time.Now()
+					}
 				}()
 				intervalTicker = channel
 			} else {
