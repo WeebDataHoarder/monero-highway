@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"git.gammaspectra.live/P2Pool/consensus/v4/monero/client/zmq"
@@ -19,13 +21,22 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+type MoneroCheckpoints struct {
+	Hashlines []MoneroCheckpoint `json:"hashlines,omitempty"`
+}
+
+type MoneroCheckpoint struct {
+	Hash   types.Hash `json:"hash"`
+	Height uint64     `json:"height"`
+}
+
 func main() {
 	rpcUrl := flag.String("rpc", "http://127.0.0.1:18081", "Monero RPC server URL. Can be restricted")
 	zmqAddr := flag.String("zmq", "tcp://127.0.0.1:18083", "Monero ZMQ-PUB server address")
 
 	doLoop := flag.Bool("loop", false, "By default the program will bail out when a sanity check fails or miscondition happens. Enable this to make it loop instead from scratch")
 	pushConfigPath := flag.String("push-config", "", "Path to YAML file to push records")
-	checkpointStatePath := flag.String("checkpoint-state", "checkpoints.txt", "File where to save checkpoint state. Directory where it is emplaced must be writable and on same mount")
+	checkpointStatePath := flag.String("checkpoint-state", "checkpoints.json", "File where to save checkpoints.json state. Directory where it is emplaced must be writable and on same mount. Same format as used in Monero, point this to the .bitmonero folder or .bitmonero/testnet for loading the checkpoints faster.")
 	checkpointDepth := flag.Uint64("checkpoint-depth", 2, "Depth from tip to place checkpoints at. Depth of 2, means tip height of 100 will checkpoint 98")
 	checkpointInterval := flag.Duration("checkpoint-interval", 0, "Interval when checkpoints will be set. Default zero, checkpoint instantly. Recommended: 5m")
 
@@ -83,11 +94,20 @@ func main() {
 				if err != nil {
 					slog.Error("Error reading state file", "error", err)
 				} else {
+					var checkpointState MoneroCheckpoints
 					// we can continue - no state exists yet
-					check, err = checkpoint.FromString(string(bytes.Split(stateData, []byte("\n"))[0]))
+					err = json.Unmarshal(stateData, &checkpointState)
 					if err != nil {
 						slog.Error("Error parsing state file", "error", err)
-					} else {
+					} else if len(checkpointState.Hashlines) > 0 {
+						// DESC
+						slices.SortFunc(checkpointState.Hashlines, func(a, b MoneroCheckpoint) int {
+							return int(b.Height) - int(a.Height)
+						})
+						// take highest
+						check.Height = checkpointState.Hashlines[0].Height
+						check.Id = checkpointState.Hashlines[0].Hash
+
 						slog.Info("Loaded checkpoint from state file", "height", check.Height, "id", check.Id)
 					}
 				}
@@ -242,8 +262,21 @@ func main() {
 						}
 
 						if *checkpointStatePath != "" {
+							checkpointsState := MoneroCheckpoints{
+								Hashlines: []MoneroCheckpoint{
+									{
+										Height: check.Height,
+										Hash:   check.Id,
+									},
+								},
+							}
+							blob, err := json.MarshalIndent(&checkpointsState, "", "    ")
+							if err != nil {
+								slog.Error("Error marshaling checkpoint state", "error", err)
+							}
+
 							// atomically write new ones before pushing
-							err = WriteFile(*checkpointStatePath, []byte(check.String()), 0777)
+							err = WriteFile(*checkpointStatePath, blob, 0777)
 							if err != nil {
 								slog.Error("Error writing checkpoint file", "error", err)
 
