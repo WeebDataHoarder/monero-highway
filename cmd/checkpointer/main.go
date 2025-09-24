@@ -131,7 +131,6 @@ func main() {
 				if *checkpointInterval <= 0 {
 					// special case
 					channel := make(chan time.Time)
-					close(channel)
 					intervalTicker = channel
 				} else {
 					if *checkpointInterval/20 > 0 {
@@ -208,7 +207,7 @@ func main() {
 						// we have reorg'd!
 					}
 
-					if !checkedTicker {
+					if *checkpointInterval > 0 && !checkedTicker {
 						select {
 						case <-intervalTicker:
 						default:
